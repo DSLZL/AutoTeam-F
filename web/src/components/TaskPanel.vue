@@ -36,6 +36,46 @@
       </button>
     </div>
 
+    <!-- round-12 F2 — rotate 实时进度面板 (SSE) -->
+    <div class="mt-4 rounded-xl border border-hairline bg-surface">
+      <button type="button"
+        class="w-full flex items-center justify-between gap-3 px-4 py-2.5 text-sm focus-ring rounded-xl"
+        @click="showProgress = !showProgress">
+        <span class="inline-flex items-center gap-2 font-semibold text-ink-700">
+          <Activity class="w-4 h-4" :class="rotateStream.isConnected.value ? 'text-emerald-600' : 'text-ink-400'" :stroke-width="2" />
+          实时进度
+          <span v-if="rotateStream.events.value.length"
+            class="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-mono bg-indigo-50 text-indigo-700 border border-indigo-200">
+            {{ rotateStream.events.value.length }}
+          </span>
+          <span v-if="!rotateStream.isConnected.value" class="text-[11px] text-ink-400 font-normal">
+            (未连接 SSE)
+          </span>
+        </span>
+        <component :is="showProgress ? ChevronUp : ChevronDown" class="w-4 h-4 text-ink-400" :stroke-width="2" />
+      </button>
+      <div v-if="showProgress" class="px-4 pb-3 pt-1 space-y-1.5 max-h-64 overflow-y-auto">
+        <div v-if="!rotateStream.events.value.length" class="text-xs text-ink-400 py-2 text-center">
+          暂无转移事件 — 启动一次轮转/补满任务,这里会实时显示账号状态变更。
+        </div>
+        <div v-for="(ev, idx) in rotateStream.events.value" :key="ev.ts + ':' + idx"
+          class="flex items-start gap-2 px-2.5 py-1.5 rounded-lg border text-xs animate-rise"
+          :class="transitionTone(ev)">
+          <component :is="transitionIcon(ev)" class="w-3.5 h-3.5 mt-0.5 shrink-0" :stroke-width="2" />
+          <div class="flex-1 min-w-0">
+            <div class="font-mono truncate">{{ ev.email }}</div>
+            <div class="text-[11px] opacity-80">
+              <span class="font-mono">{{ statusLabel(ev.from) || '—' }}</span>
+              <span class="mx-1">→</span>
+              <span class="font-mono font-semibold">{{ statusLabel(ev.to) }}</span>
+              <span v-if="ev.reason" class="ml-1 opacity-70">· {{ ev.reason }}</span>
+            </div>
+          </div>
+          <span class="text-[10px] font-mono opacity-60 mt-0.5 shrink-0">{{ formatTransitionTime(ev.ts) }}</span>
+        </div>
+      </div>
+    </div>
+
     <!-- 注册域名切换(仅 pool 模式可见) -->
     <div v-if="mode === 'pool'"
       class="mt-5 p-3 rounded-xl border border-white/[0.04] bg-white/[0.02] flex flex-wrap items-center gap-2 text-sm">
@@ -79,9 +119,16 @@ import {
   RefreshCw,
   Download,
   Users,
+  Activity,
+  Check,
+  AlertTriangle,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-vue-next'
 import { api } from '../api.js'
 import AtButton from './AtButton.vue'
+import { useStatusInvalidator } from '../composables/useStatus.js'
+import { statusLabel } from '../composables/useStatus.js'
 
 const props = defineProps({
   runningTask: Object,
@@ -91,6 +138,42 @@ const props = defineProps({
   masterHealth: { type: Object, default: null },
 })
 const emit = defineEmits(['task-started', 'refresh'])
+
+// round-12 F2/F3 — SSE 实时进度 + vue-query invalidation
+// useStatusInvalidator 内部:SSE 事件 → invalidateQueries(['status'])
+// 它返回 useRotateStream 的 reactive ref,模板里直接 v-for events
+const rotateStream = useStatusInvalidator()
+const showProgress = ref(false)
+
+function transitionIcon(ev) {
+  // 派发 lucide icon:to=active/personal → Check;to=auth_invalid/orphan → AlertTriangle;
+  // 其余 (pending/standby/exhausted/grace) → Activity
+  const t = ev?.to
+  if (t === 'active' || t === 'personal') return Check
+  if (t === 'auth_invalid' || t === 'orphan' || t === 'exhausted') return AlertTriangle
+  return Activity
+}
+
+function transitionTone(ev) {
+  const t = ev?.to
+  if (t === 'active' || t === 'personal') {
+    return 'text-emerald-700 bg-emerald-50 border-emerald-200'
+  }
+  if (t === 'auth_invalid' || t === 'orphan' || t === 'exhausted') {
+    return 'text-rose-700 bg-rose-50 border-rose-200'
+  }
+  if (t === 'degraded_grace' || t === 'standby') {
+    return 'text-amber-700 bg-amber-50 border-amber-200'
+  }
+  return 'text-indigo-700 bg-indigo-50 border-indigo-200'
+}
+
+function formatTransitionTime(ts) {
+  if (!ts) return ''
+  const d = new Date(ts * 1000)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
 
 // round-12 F1 — emoji → Lucide
 const actions = [

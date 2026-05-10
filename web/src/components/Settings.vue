@@ -2,7 +2,7 @@
   <div class="space-y-5">
     <div>
       <div class="text-[10px] uppercase tracking-[0.3em] text-indigo-300/70 mb-1">Configuration</div>
-      <h2 class="text-2xl font-extrabold text-white tracking-tight">设置</h2>
+      <h2 class="text-2xl font-extrabold text-ink-950 tracking-tight">设置</h2>
       <p class="text-sm text-gray-400 mt-1">管理员登录、巡检策略、邮箱后端、生命周期参数,皆可在此调整。</p>
     </div>
 
@@ -16,7 +16,7 @@
     <div class="glass rounded-2xl p-5">
       <div class="flex items-center justify-between gap-4 mb-4">
         <div>
-          <h2 class="text-lg font-semibold text-white">管理员登录</h2>
+          <h2 class="text-lg font-semibold text-ink-950">管理员登录</h2>
           <p class="text-sm text-gray-400 mt-1">
             首次启动先在这里完成主号登录，系统会统一写入单个 state.json 文件，保存邮箱、session、workspace ID、workspace 名称；如果你走了密码登录，也会保留密码供主号 Codex 复用。
           </p>
@@ -27,7 +27,7 @@
             ? 'bg-green-500/10 text-green-400 border-green-500/20'
             : adminBusy
               ? 'bg-yellow-500/10 text-yellow-300 border-yellow-500/20'
-              : 'bg-gray-800 text-gray-400 border-gray-700'"
+              : 'bg-surface-hover text-ink-500 border-hairline'"
         >
           {{ adminConfigured ? '已配置' : adminBusy ? '登录中' : '未配置' }}
         </span>
@@ -38,19 +38,19 @@
       </div>
 
       <div v-if="adminConfigured && !adminBusy" class="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
-        <div class="px-3 py-3 bg-gray-800/60 border border-gray-800 rounded-lg">
+        <div class="px-3 py-3 bg-surface-hover border border-hairline rounded-lg">
           <div class="text-gray-500 mb-1">管理员邮箱</div>
-          <div class="font-mono text-white break-all">{{ props.adminStatus?.email || '-' }}</div>
+          <div class="font-mono text-ink-950 break-all">{{ props.adminStatus?.email || '-' }}</div>
         </div>
-        <div class="px-3 py-3 bg-gray-800/60 border border-gray-800 rounded-lg">
+        <div class="px-3 py-3 bg-surface-hover border border-hairline rounded-lg">
           <div class="text-gray-500 mb-1">Workspace ID</div>
-          <div class="font-mono text-white break-all">{{ props.adminStatus?.account_id || '-' }}</div>
+          <div class="font-mono text-ink-950 break-all">{{ props.adminStatus?.account_id || '-' }}</div>
         </div>
-        <div class="px-3 py-3 bg-gray-800/60 border border-gray-800 rounded-lg md:col-span-2">
+        <div class="px-3 py-3 bg-surface-hover border border-hairline rounded-lg md:col-span-2">
           <div class="text-gray-500 mb-1">Workspace 名称</div>
-          <div class="text-white">{{ props.adminStatus?.workspace_name || '未识别' }}</div>
+          <div class="text-ink-700">{{ props.adminStatus?.workspace_name || '未识别' }}</div>
         </div>
-        <div class="px-3 py-3 bg-gray-800/60 border border-gray-800 rounded-lg md:col-span-2">
+        <div class="px-3 py-3 bg-surface-hover border border-hairline rounded-lg md:col-span-2">
           <div class="text-gray-500 mb-1">Session Token</div>
           <div v-if="props.adminStatus?.session_present" class="text-green-400 text-xs">已配置</div>
           <div v-else class="space-y-2">
@@ -66,10 +66,10 @@
                   并登录管理员账号
                 </li>
                 <li>按 F12 打开开发者工具 → Application → Cookies → chatgpt.com</li>
-                <li>找到 <code class="bg-gray-800 px-1 rounded">__Secure-next-auth.session-token</code></li>
+                <li>找到 <code class="bg-surface-hover px-1 rounded">__Secure-next-auth.session-token</code></li>
                 <li>
-                  如果有 <code class="bg-gray-800 px-1 rounded">.0</code> 和
-                  <code class="bg-gray-800 px-1 rounded">.1</code> 两个，将值按顺序拼接在一起
+                  如果有 <code class="bg-surface-hover px-1 rounded">.0</code> 和
+                  <code class="bg-surface-hover px-1 rounded">.1</code> 两个，将值按顺序拼接在一起
                 </li>
                 <li>粘贴到下方输入框</li>
               </ol>
@@ -79,13 +79,13 @@
                 v-model.trim="sessionToken"
                 type="password"
                 placeholder="粘贴 session token"
-                class="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-xs text-white font-mono focus:outline-none focus:border-blue-500"
+                class="w-full px-2 py-1.5 bg-surface-hover border border-hairline rounded text-xs text-ink-950 font-mono focus:outline-none focus:border-indigo-500"
               />
               <div class="flex justify-end">
                 <button
                   @click="importSessionToken"
                   :disabled="submitting || !sessionEmail || !sessionToken"
-                  class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded transition disabled:opacity-50"
+                  class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-on-accent text-xs rounded transition disabled:opacity-50"
                 >
                   {{ submitting ? '校验中...' : '保存' }}
                 </button>
@@ -93,9 +93,9 @@
             </div>
           </div>
         </div>
-        <div class="px-3 py-3 bg-gray-800/60 border border-gray-800 rounded-lg md:col-span-2">
+        <div class="px-3 py-3 bg-surface-hover border border-hairline rounded-lg md:col-span-2">
           <div class="text-gray-500 mb-1">管理员密码</div>
-          <div class="text-white">{{ props.adminStatus?.password_saved ? '已保存，可用于主号 Codex 登录' : '未保存' }}</div>
+          <div class="text-ink-700">{{ props.adminStatus?.password_saved ? '已保存，可用于主号 Codex 登录' : '未保存' }}</div>
         </div>
       </div>
 
@@ -107,19 +107,19 @@
               type="email"
               autocomplete="username"
               placeholder="输入主号邮箱"
-              class="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+              class="flex-1 px-3 py-2 bg-surface-hover border border-hairline rounded-lg text-sm text-ink-950 focus:outline-none focus:border-indigo-500"
             />
             <button
               @click="startLogin"
               :disabled="submitting || !email"
-              class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition disabled:opacity-50"
+              class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-on-accent text-sm rounded-lg transition disabled:opacity-50"
             >
               {{ submitting ? '提交中...' : '开始登录' }}
             </button>
           </div>
 
-          <div class="border border-gray-800 rounded-xl p-4 bg-gray-800/30">
-            <div class="text-sm font-medium text-white">或手动导入 session_token</div>
+          <div class="border border-hairline rounded-xl p-4 bg-surface-hover">
+            <div class="text-sm font-medium text-ink-950">或手动导入 session_token</div>
             <p class="text-xs text-gray-400 mt-1 mb-3">
               适合你已经在浏览器里拿到 <span class="font-mono">__Secure-next-auth.session-token</span> 的场景。系统会校验 token，并自动识别 workspace ID / 名称。
             </p>
@@ -134,10 +134,10 @@
                   并登录管理员账号
                 </li>
                 <li>按 F12 打开开发者工具 → Application → Cookies → chatgpt.com</li>
-                <li>找到 <code class="bg-gray-800 px-1 rounded">__Secure-next-auth.session-token</code></li>
+                <li>找到 <code class="bg-surface-hover px-1 rounded">__Secure-next-auth.session-token</code></li>
                 <li>
-                  如果有 <code class="bg-gray-800 px-1 rounded">.0</code> 和
-                  <code class="bg-gray-800 px-1 rounded">.1</code> 两个，将值按顺序拼接在一起
+                  如果有 <code class="bg-surface-hover px-1 rounded">.0</code> 和
+                  <code class="bg-surface-hover px-1 rounded">.1</code> 两个，将值按顺序拼接在一起
                 </li>
                 <li>粘贴到下方输入框</li>
               </ol>
@@ -148,20 +148,20 @@
                 type="email"
                 autocomplete="username"
                 placeholder="输入主号邮箱"
-                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-cyan-500"
+                class="w-full px-3 py-2 bg-surface-hover border border-hairline rounded-lg text-sm text-ink-950 focus:outline-none focus:border-cyan-500"
               />
               <textarea
                 v-model.trim="sessionToken"
                 rows="4"
                 spellcheck="false"
                 placeholder="粘贴完整 session_token"
-                class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white font-mono focus:outline-none focus:border-cyan-500"
+                class="w-full px-3 py-2 bg-surface-hover border border-hairline rounded-lg text-sm text-ink-950 font-mono focus:outline-none focus:border-cyan-500"
               ></textarea>
               <div class="flex justify-end">
                 <button
                   @click="importSessionToken"
                   :disabled="submitting || !sessionEmail || !sessionToken"
-                  class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white text-sm rounded-lg transition disabled:opacity-50"
+                  class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-on-accent text-sm rounded-lg transition disabled:opacity-50"
                 >
                   {{ submitting ? '校验中...' : '导入 session_token' }}
                 </button>
@@ -174,14 +174,14 @@
           <button
             @click="syncMainCodex"
             :disabled="submitting || syncingMain"
-            class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white text-sm rounded-lg transition disabled:opacity-50"
+            class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-on-accent text-sm rounded-lg transition disabled:opacity-50"
           >
             {{ syncingMain ? '同步中...' : '同步主号 Codex 到 CPA' }}
           </button>
           <button
             @click="logoutAdmin"
             :disabled="submitting || syncingMain"
-            class="px-4 py-2 bg-rose-700/80 hover:bg-rose-700 text-white text-sm rounded-lg transition disabled:opacity-50"
+            class="px-4 py-2 bg-rose-700/80 hover:bg-rose-700 text-on-accent text-sm rounded-lg transition disabled:opacity-50"
           >
             {{ submitting ? '处理中...' : '清除登录态' }}
           </button>
@@ -200,12 +200,12 @@
             autocomplete="current-password"
             placeholder="输入主号密码"
             :disabled="submitting"
-            class="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            class="flex-1 px-3 py-2 bg-surface-hover border border-hairline rounded-lg text-sm text-ink-950 focus:outline-none focus:border-indigo-500"
           />
           <button
             @click="submitPassword"
             :disabled="submitting || !password"
-            class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition disabled:opacity-50"
+            class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-on-accent text-sm rounded-lg transition disabled:opacity-50"
           >
             {{ submitting ? '提交中...' : '提交密码' }}
           </button>
@@ -219,12 +219,12 @@
             autocomplete="one-time-code"
             placeholder="输入邮箱验证码"
             :disabled="submitting"
-            class="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            class="flex-1 px-3 py-2 bg-surface-hover border border-hairline rounded-lg text-sm text-ink-950 focus:outline-none focus:border-indigo-500"
           />
           <button
             @click="submitCode"
             :disabled="submitting || !code"
-            class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition disabled:opacity-50 disabled:bg-gray-700 disabled:hover:bg-gray-700"
+            class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-on-accent text-sm rounded-lg transition disabled:opacity-50 disabled:bg-gray-700 disabled:hover:bg-gray-700"
           >
             {{ submitting ? '提交中...' : '提交验证码' }}
           </button>
@@ -237,7 +237,7 @@
           <select
             v-model="workspaceOptionId"
             :disabled="submitting"
-            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            class="w-full px-3 py-2 bg-surface-hover border border-hairline rounded-lg text-sm text-ink-950 focus:outline-none focus:border-indigo-500"
           >
             <option disabled value="">请选择组织</option>
             <option
@@ -251,7 +251,7 @@
           <button
             @click="submitWorkspace"
             :disabled="submitting || !workspaceOptionId"
-            class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition disabled:opacity-50 disabled:bg-gray-700 disabled:hover:bg-gray-700"
+            class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-on-accent text-sm rounded-lg transition disabled:opacity-50 disabled:bg-gray-700 disabled:hover:bg-gray-700"
           >
             {{ submitting ? '提交中...' : '确认组织选择' }}
           </button>
@@ -265,14 +265,14 @@
           <button
             @click="cancelLogin"
             :disabled="submitting"
-            class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-200 rounded-lg border border-gray-700 transition disabled:opacity-50"
+            class="px-4 py-2 bg-surface-hover hover:bg-hairline text-sm text-ink-700 rounded-lg border border-hairline transition disabled:opacity-50"
           >
             取消登录
           </button>
         </div>
       </div>
 
-      <div v-if="codexBusy" class="mt-4 space-y-4 border-t border-gray-800 pt-4">
+      <div v-if="codexBusy" class="mt-4 space-y-4 border-t border-hairline pt-4">
         <div class="text-sm text-gray-300">
           主号 Codex 登录继续中
         </div>
@@ -284,12 +284,12 @@
             autocomplete="current-password"
             placeholder="输入主号密码"
             :disabled="syncingMain"
-            class="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            class="flex-1 px-3 py-2 bg-surface-hover border border-hairline rounded-lg text-sm text-ink-950 focus:outline-none focus:border-indigo-500"
           />
           <button
             @click="submitMainCodexPassword"
             :disabled="syncingMain || !codexPassword"
-            class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white text-sm rounded-lg transition disabled:opacity-50"
+            class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-on-accent text-sm rounded-lg transition disabled:opacity-50"
           >
             {{ syncingMain ? '提交中...' : '提交密码' }}
           </button>
@@ -303,12 +303,12 @@
             autocomplete="one-time-code"
             placeholder="输入主号 Codex 验证码"
             :disabled="syncingMain"
-            class="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            class="flex-1 px-3 py-2 bg-surface-hover border border-hairline rounded-lg text-sm text-ink-950 focus:outline-none focus:border-indigo-500"
           />
           <button
             @click="submitMainCodexCode"
             :disabled="syncingMain || !codexCode"
-            class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-white text-sm rounded-lg transition disabled:opacity-50"
+            class="px-4 py-2 bg-cyan-700 hover:bg-cyan-600 text-on-accent text-sm rounded-lg transition disabled:opacity-50"
           >
             {{ syncingMain ? '提交中...' : '提交验证码' }}
           </button>
@@ -322,7 +322,7 @@
           <button
             @click="cancelMainCodexSync"
             :disabled="syncingMain"
-            class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-200 rounded-lg border border-gray-700 transition disabled:opacity-50"
+            class="px-4 py-2 bg-surface-hover hover:bg-hairline text-sm text-ink-700 rounded-lg border border-hairline transition disabled:opacity-50"
           >
             取消主号 Codex 登录
           </button>
@@ -332,7 +332,7 @@
 
     <div class="glass rounded-2xl p-5">
       <div class="flex items-center justify-between mb-4">
-        <h2 class="text-lg font-semibold text-white">巡检设置</h2>
+        <h2 class="text-lg font-semibold text-ink-950">巡检设置</h2>
         <span v-if="saved" class="text-xs text-green-400 transition">已保存</span>
       </div>
 
@@ -341,7 +341,7 @@
           <label class="block text-sm text-gray-400 mb-1">巡检间隔</label>
           <div class="flex items-center gap-2">
             <input v-model.number="form.interval" type="number" min="1"
-              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500" />
+              class="w-full px-3 py-2 bg-surface-hover border border-hairline rounded-lg text-sm text-ink-950 focus:outline-none focus:border-indigo-500" />
             <span class="text-sm text-gray-500 shrink-0">分钟</span>
           </div>
         </div>
@@ -349,7 +349,7 @@
           <label class="block text-sm text-gray-400 mb-1">额度阈值</label>
           <div class="flex items-center gap-2">
             <input v-model.number="form.threshold" type="number" min="1" max="100"
-              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500" />
+              class="w-full px-3 py-2 bg-surface-hover border border-hairline rounded-lg text-sm text-ink-950 focus:outline-none focus:border-indigo-500" />
             <span class="text-sm text-gray-500 shrink-0">%</span>
           </div>
         </div>
@@ -357,7 +357,7 @@
           <label class="block text-sm text-gray-400 mb-1">触发账号数</label>
           <div class="flex items-center gap-2">
             <input v-model.number="form.min_low" type="number" min="1"
-              class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500" />
+              class="w-full px-3 py-2 bg-surface-hover border border-hairline rounded-lg text-sm text-ink-950 focus:outline-none focus:border-indigo-500" />
             <span class="text-sm text-gray-500 shrink-0">个</span>
           </div>
         </div>
@@ -368,7 +368,7 @@
           每 {{ form.interval }} 分钟检查一次，{{ form.min_low }} 个以上账号剩余低于 {{ form.threshold }}% 时自动轮转
         </p>
         <button @click="save" :disabled="saving"
-          class="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition disabled:opacity-50">
+          class="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-on-accent text-sm rounded-lg transition disabled:opacity-50">
           {{ saving ? '保存中...' : '保存' }}
         </button>
       </div>
@@ -378,7 +378,7 @@
     <div class="glass rounded-2xl p-5">
       <div class="flex items-center justify-between gap-4 mb-4">
         <div>
-          <h2 class="text-lg font-semibold text-white">邮箱后端</h2>
+          <h2 class="text-lg font-semibold text-ink-950">邮箱后端</h2>
           <p class="text-sm text-gray-400 mt-1">
             切换或重新配置临时邮箱服务（cf_temp_email / maillab）。SetupPage 完成后所有字段已落盘，这里仅在需要更换服务时使用。
           </p>
@@ -387,7 +387,7 @@
           class="min-w-[72px] px-3 py-1.5 rounded-full text-xs text-center whitespace-nowrap border"
           :class="mailFormDirty
             ? 'bg-yellow-500/10 text-yellow-300 border-yellow-500/20'
-            : 'bg-gray-800 text-gray-400 border-gray-700'"
+              : 'bg-surface-hover text-ink-500 border-hairline'"
         >
           {{ mailFormDirty ? '有改动' : '已配置' }}
         </span>
@@ -410,13 +410,13 @@
         <button
           @click="resetMailForm"
           :disabled="mailSaving"
-          class="px-4 py-1.5 bg-gray-800 hover:bg-gray-700 text-sm text-gray-200 rounded-lg border border-gray-700 transition disabled:opacity-50">
+          class="px-4 py-1.5 bg-surface-hover hover:bg-hairline text-sm text-ink-700 rounded-lg border border-hairline transition disabled:opacity-50">
           重置
         </button>
         <button
           @click="saveMailConfig"
           :disabled="mailSaving || mailState !== 'SAVE'"
-          class="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded-lg transition disabled:opacity-50">
+          class="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-on-accent text-sm rounded-lg transition disabled:opacity-50">
           {{ mailSaving ? '保存中...' : '保存邮箱后端配置' }}
         </button>
       </div>
@@ -425,7 +425,7 @@
     <!-- SPEC-2 §席位策略 + 探测节流 -->
     <div class="glass rounded-2xl p-5">
       <div class="mb-4">
-        <h2 class="text-lg font-semibold text-white">账号生命周期</h2>
+        <h2 class="text-lg font-semibold text-ink-950">账号生命周期</h2>
         <p class="text-sm text-gray-400 mt-1">
           控制邀请席位偏好(完整 ChatGPT 席位 vs 仅 Codex 席位),以及 sync 巡检识别"被踢"的探测节流。
         </p>
@@ -435,22 +435,22 @@
         {{ lifecycleMessage }}
       </div>
 
-      <div class="mb-4 p-3 bg-gray-800/40 border border-gray-800 rounded">
+      <div class="mb-4 p-3 bg-surface-hover/60 border border-hairline rounded">
         <div class="flex items-center justify-between mb-2">
-          <span class="text-sm text-white">邀请席位偏好</span>
+          <span class="text-sm text-ink-950">邀请席位偏好</span>
           <span class="text-xs text-gray-400">{{ preferredSeatType === 'codex' ? '锁定 Codex 席位' : '优先 ChatGPT 完整席位' }}</span>
         </div>
         <div class="flex gap-2">
           <button
             @click="setPreferredSeatType('default')"
-            :class="preferredSeatType === 'default' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-300'"
+            :class="preferredSeatType === 'default' ? 'bg-indigo-600 border-indigo-500 text-on-accent' : 'bg-surface-hover border-hairline text-ink-700'"
             class="flex-1 px-3 py-2 border rounded text-sm transition">
             <div class="font-medium">default</div>
             <div class="text-xs opacity-75 mt-0.5">优先 PATCH 升级到 ChatGPT 席位(老行为)</div>
           </button>
           <button
             @click="setPreferredSeatType('codex')"
-            :class="preferredSeatType === 'codex' ? 'bg-blue-600 border-blue-500 text-white' : 'bg-gray-800 border-gray-700 text-gray-300'"
+            :class="preferredSeatType === 'codex' ? 'bg-indigo-600 border-indigo-500 text-on-accent' : 'bg-surface-hover border-hairline text-ink-700'"
             class="flex-1 px-3 py-2 border rounded text-sm transition">
             <div class="font-medium">codex</div>
             <div class="text-xs opacity-75 mt-0.5">锁 codex-only 席位,跳过 PATCH(节约 ChatGPT 席位)</div>
@@ -458,8 +458,8 @@
         </div>
       </div>
 
-      <div class="p-3 bg-gray-800/40 border border-gray-800 rounded">
-        <div class="text-sm text-white mb-2">sync 探测节流</div>
+      <div class="p-3 bg-surface-hover/60 border border-hairline rounded">
+        <div class="text-sm text-ink-950 mb-2">sync 探测节流</div>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
             <div class="text-xs text-gray-400 mb-1">并发上限 (1-16)</div>
@@ -467,7 +467,7 @@
               v-model.number="syncProbeConcurrency"
               type="number"
               min="1" max="16"
-              class="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white" />
+              class="w-full px-2 py-1.5 bg-surface-hover border border-hairline rounded text-sm text-ink-950" />
           </div>
           <div>
             <div class="text-xs text-gray-400 mb-1">同号去重冷却 (分钟,1-1440)</div>
@@ -475,14 +475,14 @@
               v-model.number="syncProbeCooldown"
               type="number"
               min="1" max="1440"
-              class="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white" />
+              class="w-full px-2 py-1.5 bg-surface-hover border border-hairline rounded text-sm text-ink-950" />
           </div>
         </div>
         <div class="flex justify-end mt-3">
           <button
             @click="saveSyncProbe"
             :disabled="lifecycleSaving"
-            class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs rounded">
+            class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-on-accent text-xs rounded">
             {{ lifecycleSaving ? '保存中...' : '保存探测节流' }}
           </button>
         </div>

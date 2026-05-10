@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
@@ -2771,6 +2771,95 @@ def post_task_cancel():
         "task_id": _current_task_id,
         "command": task.get("command"),
     }
+
+
+# ---------------------------------------------------------------------------
+# Round 12 F2 — SSE: rotate 实时进度推送
+# ---------------------------------------------------------------------------
+# 订阅 S1 commit ef1637c 的事件总线 (default_machine.subscribe),把每次状态
+# 转移序列化为 SSE event 行 (data: {...}\n\n)。心跳 15s 一次 (": heartbeat\n\n")
+# 维持 EventSource 连接、绕过 proxy idle timeout。
+#
+# 设计要点:
+# - subscribe 回调在调用线程上同步执行 (S1 实现);用线程安全 SimpleQueue 把事件
+#   中转给 sync generator,避免 generator 阻塞而 callback 被持续触发导致 OOM。
+# - 客户端断开 (浏览器 close / refresh / 进程退出) 时 FastAPI 关闭 generator,
+#   try/finally 块负责 unsubscribe 防泄漏。
+# - generator 是 sync 而非 async,FastAPI 用 anyio threadpool 跑,uvicorn 不会被阻塞。
+# - 每条 event payload schema (与 account_state.Transition.to_jsonl 对齐):
+#     {"email":..., "from":..., "to":..., "reason":..., "ts":..., "extra":{...}}
+# - 没有 manager.py 改动 (本任务范围外);S3/S4 任务把 transition 调用塞进
+#   manager.py 的 rotate 路径,本端点会自动看到事件。
+
+import queue as _sse_queue
+
+
+def _build_sse_event_stream(machine, *, heartbeat_seconds: float = 15.0):
+    """Return a sync generator yielding SSE-formatted bytes from machine subscriber.
+
+    Pulled out of the route so unit tests can drive it without spinning up
+    Starlette/uvicorn — see ``tests/unit/test_round12_rotate_sse_stream.py``.
+    """
+    q: _sse_queue.SimpleQueue = _sse_queue.SimpleQueue()
+    _SENTINEL = object()
+
+    def _on_transition(transition):
+        try:
+            q.put({
+                "email": transition.email,
+                "from": transition.from_state.value if transition.from_state else None,
+                "to": transition.to_state.value,
+                "reason": transition.reason or "",
+                "ts": transition.timestamp,
+                "extra": dict(transition.extra or {}),
+            })
+        except Exception:
+            logger.exception("[sse] failed to enqueue transition %r", transition)
+
+    machine.subscribe(_on_transition)
+
+    def _generator():
+        try:
+            # 立刻发一次 retry 提示 + 心跳,让前端尽早确认连接成功
+            yield b"retry: 5000\n\n"
+            yield b": connected\n\n"
+            while True:
+                try:
+                    payload = q.get(timeout=heartbeat_seconds)
+                except _sse_queue.Empty:
+                    yield b": heartbeat\n\n"
+                    continue
+                if payload is _SENTINEL:
+                    break
+                line = "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+                yield line.encode("utf-8")
+        finally:
+            machine.unsubscribe(_on_transition)
+
+    return _generator(), q, _on_transition
+
+
+@app.get("/api/rotate/stream")
+def get_rotate_stream(request: Request):
+    """Server-Sent Events: 推送账号状态转移事件到前端 (rotate 实时进度面板)。
+
+    Content-Type: text/event-stream
+    Cache-Control: no-cache (代理不要缓存)
+    X-Accel-Buffering: no (Nginx 不要缓冲,确保 chunk 及时落地浏览器)
+    """
+    from autoteam.account_state import default_machine
+
+    generator, _q, _cb = _build_sse_event_stream(default_machine)
+
+    return StreamingResponse(
+        generator,
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

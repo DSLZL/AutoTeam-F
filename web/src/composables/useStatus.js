@@ -1,5 +1,63 @@
 // 账号状态/可用性/时间格式化工具集中位
 // spec 引用:account-state-machine.md v2.0 §2.1 / §3.2 / §5.3
+//
+// round-12 F3 — 在保留全部 utility 函数 (STATUS_LABELS / computeUsability /
+// 时间格式化…) 的前提下,新增 useStatusQuery / useStatusInvalidator 两个
+// vue-query 入口,让组件可以渐进迁移而不破坏 21 套现有 import。
+
+import { onUnmounted } from 'vue'
+import { useQuery, useQueryClient } from '@tanstack/vue-query'
+import { api } from '../api.js'
+import { useRotateStream } from './useRotateStream.js'
+
+// 全局 query key 常量,跨组件共享避免 typo
+export const STATUS_QUERY_KEY = ['status']
+
+// useStatusQuery — Dashboard / TaskPanel 使用的复合状态拉取。
+//
+// 行为:
+//   - refetchInterval: 30_000 (与 main.js 默认 staleTime 对齐)
+//   - refetchOnWindowFocus: true (vue-query 全局已开,这里仅显式声明可读性)
+//   - keepPreviousData: 切页面时保留旧数据,UI 不闪 skeleton
+//
+// 返回 vue-query 标准 ref ({ data, isFetching, isError, refetch, ... }) +
+// 一个 invalidate() 简捷方法,SSE 事件触发后调它即可。
+export function useStatusQuery(options = {}) {
+  const queryClient = useQueryClient()
+  const query = useQuery({
+    queryKey: STATUS_QUERY_KEY,
+    queryFn: () => api.getStatus(),
+    refetchInterval: options.refetchInterval ?? 30_000,
+    refetchOnWindowFocus: true,
+    keepPreviousData: true,
+    staleTime: 5_000, // 5s 内重复 mount 不重拉
+    ...options,
+  })
+
+  function invalidate() {
+    queryClient.invalidateQueries({ queryKey: STATUS_QUERY_KEY })
+  }
+
+  return { ...query, invalidate, queryClient }
+}
+
+// useStatusInvalidator — 把 rotate SSE 事件桥接到 vue-query。
+//
+// 在任意组件 setup() 里调用一次,SSE 流上每来一条 transition 就 invalidate
+// ['status'],vue-query 自动重拉(refetchOnMount + dedup)。
+//
+// 返回 useRotateStream 的所有 ref,组件可同时拿来渲染"实时进度"面板。
+export function useStatusInvalidator() {
+  const queryClient = useQueryClient()
+  const stream = useRotateStream()
+  const offTransition = stream.onTransition(() => {
+    // invalidateQueries 自身是 promise + dedup,不需要 debounce;
+    // 若 30s polling 与 SSE 重叠,vue-query 会合并成单次网络请求。
+    queryClient.invalidateQueries({ queryKey: STATUS_QUERY_KEY })
+  })
+  onUnmounted(() => offTransition && offTransition())
+  return stream
+}
 
 export const STATUS_LABELS = {
   active: 'Active',
