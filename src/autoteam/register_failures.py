@@ -43,6 +43,20 @@ OAUTH_PLAN_DRIFT_PERSISTENT = "oauth_plan_drift_persistent"
 """workspace/select 成功但 5 次 OAuth retry 后 bundle.plan_type 仍非 free — 后端最终一致性失败。"""
 
 
+# Round 12 S4 — 注册收尾双路径:mail provider rotation 触发分类(详见
+# `src/autoteam/mail/register_dual_path.py`)。三类失败会触发 RegisterPathRotator
+# 切换到下一个 provider 重试,失败明细写入 register_failures.json,**extra 中带
+# provider_chain_history 字段记录每个 provider 的尝试结果。
+MAIL_OTP_TIMEOUT = "mail_otp_timeout"
+"""注册时等待 OTP / 验证邮件超时 — 多见于 alias forwarding 链路转发延迟或 reader 失联。"""
+
+MAIL_INVITE_LINK_MISSING = "mail_invite_link_missing"
+"""邀请邮件已到但 extract_invite_link 抓不到链接 — 邮件模板变体 / HTML 损坏 / sender 异常。"""
+
+MAIL_DOMAIN_REJECTED = "mail_domain_rejected"
+"""OpenAI 拒绝当前 mail provider 的域名(disposable / not allowed) — 触发整体切到下一 provider。"""
+
+
 def _load():
     if not FAILURES_FILE.exists():
         return []
@@ -91,9 +105,16 @@ def record_failure(email, category, reason="", **extra):
         'oauth_workspace_select_no_personal'   OAuth session workspaces[] 中无 personal 项
         'oauth_workspace_select_endpoint_error' workspace/select 端点 + UI fallback 都失败
         'oauth_plan_drift_persistent'          5 次 OAuth retry 后 bundle.plan 仍非 free
+    category(Round 12 S4 新增 — 注册双路径 mail provider rotation):
+        'mail_otp_timeout'                     OTP/验证邮件等待超时 → 切下一 provider
+        'mail_invite_link_missing'             邀请链接抓不到 → 切下一 provider
+        'mail_domain_rejected'                 OpenAI 拒绝当前 provider 域名 → 切下一 provider
 
     reason: 面向人的简短描述,显示在日志和面板。可留空,从 extra.detail 取代。
     extra:  任意附加字段(attempts, duplicate_swaps, step, url, stage, detail ...)
+            Round 12 S4 约定 extra 中可带:
+              provider_chain_history: list[{provider, error_type, ts[, error]}]
+              旧记录无此字段,读路径用 `r.get("provider_chain_history", [])` 兼容。
     """
     with _LOCK:
         records = _load()

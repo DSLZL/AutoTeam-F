@@ -2501,15 +2501,67 @@ def _run_post_register_oauth(
     return email
 
 
-def _complete_registration(email, password, invite_link, mail_client, *, leave_workspace=False, out_outcome=None):
-    """完成注册 + Codex 登录（从已有邀请链接继续）。out_outcome 透传给 _run_post_register_oauth。
+def _get_mail_client_for_account(acc):
+    """模块级 mail client 路由(Round 12 S4):按账号字段返回合适的 mail provider。
+
+    与 `cmd_rotate.ensure_account_mail` 等价,但**无 cache**(每次调用都构造新实例),
+    供 `_complete_registration` / `create_account_direct` / `create_new_account` 等
+    入口在没有外部 mail_client 时使用。
+
+    路由优先级:
+      1. acc.mail_provider 显式指定 → 按 MAIL_PROVIDER_CHAIN/MAIL_PROVIDER 解析对应单 provider
+         (走 get_mail_client 内部 env 路径,保持解析一致)
+      2. 否则走 get_mail_client() 默认(MAIL_PROVIDER_CHAIN 优先,然后 MAIL_PROVIDER)
+
+    无 acc 或 acc 无 mail_provider 字段 → 等价于直接 get_mail_client()。
+
+    本 helper **不抛 MailProviderUnavailable**;构造失败时让异常上抛,由调用方决定
+    是否启用 fallback 链 / 切到 RegisterPathRotator。
+    """
+    from autoteam.mail import get_mail_client
+
+    client = get_mail_client()
+    login = getattr(client, "login", None)
+    if callable(login):
+        try:
+            login()
+        except Exception as exc:
+            logger.warning(
+                "[mail-route] 账号 %s mail provider login 失败(将由上层决定是否切换): %s",
+                (acc or {}).get("email") if acc else None,
+                exc,
+            )
+            raise
+    return client
+
+
+def _resolve_mail_client_or_default(mail_client, acc=None):
+    """统一处理 mail_client=None 入参:按 acc 路由或走全局默认。
+
+    Round 12 S4 — `_complete_registration` / `create_account_direct` /
+    `create_new_account` 的入口适配:旧调用方继续传 mail_client(完全兼容),新调用方
+    可省略 mail_client 让本 helper 按 acc / env 自动构造。
+    """
+    if mail_client is not None:
+        return mail_client
+    return _get_mail_client_for_account(acc)
+
+
+def _complete_registration(email, password, invite_link, mail_client=None, *, leave_workspace=False, out_outcome=None, acc=None):
+    """完成注册 + Codex 登录(从已有邀请链接继续)。out_outcome 透传给 _run_post_register_oauth。
 
     Round 12 S3 cherry-pick (上游 `.upstream/manager.py:1225`): 一次性生成
     SignupProfile 并透传给 register_with_invite,确保注册 about-you 与后续
     Codex OAuth about-you 拿到完全一致的姓名/生日/年龄(降低 OpenAI 风控触发率).
+
+    Round 12 S4: `mail_client` 改为可选(默认 None) — None 时按 `acc`(可选)
+    通过 `_get_mail_client_for_account(acc)` 路由;旧调用方显式传 mail_client 时
+    完全保留旧行为(向后兼容)。
     """
     from autoteam.invite import register_with_invite
     from autoteam.signup_profile import generate_signup_profile
+
+    mail_client = _resolve_mail_client_or_default(mail_client, acc=acc)
 
     signup_profile = generate_signup_profile()
 
@@ -3327,7 +3379,7 @@ def _extract_session_token_from_context(context):
     return session_token or None
 
 
-def create_account_direct(mail_client, *, leave_workspace=False, out_outcome=None):
+def create_account_direct(mail_client=None, *, leave_workspace=False, out_outcome=None, acc=None):
     """
     直接注册模式（域名已配置自动加入 workspace，不需要邀请）。
     流程：创建邮箱 → 注册 ChatGPT → 自动加入 workspace → Codex 登录
@@ -3339,8 +3391,17 @@ def create_account_direct(mail_client, *, leave_workspace=False, out_outcome=Non
     - is_phone=True:     当前邮箱已暴露给 OpenAI，立即删邮箱、整个账号放弃（return None）
     - is_duplicate=True: 换个临时邮箱继续尝试，独立计数不消耗 register_attempts
     - 其他异常:          归入现有 retry 计数
+
+    Round 12 S4: `mail_client` 改为可选(默认 None) — None 时按 `acc`(可选)走
+    `_get_mail_client_for_account(acc)` 路由;旧调用方显式传 mail_client 时完全
+    保留旧行为(向后兼容)。register-level 多 provider rotation 由 `MAIL_PROVIDER_CHAIN`
+    env 驱动:配置 chain 时 `get_mail_client()` 返回 `FallbackMailProvider`,
+    自动在 mail-API 级失败时降级;邮箱-粒度的 provider 切换通过 `RegisterPathRotator`
+    包装(参见 `autoteam.mail.register_dual_path`),业务调用方可自行编排。
     """
     from autoteam.invite import RegisterBlocked
+
+    mail_client = _resolve_mail_client_or_default(mail_client, acc=acc)
 
     account_id, email = mail_client.create_temp_email()
     password = random_password()
@@ -3485,14 +3546,18 @@ def create_account_direct(mail_client, *, leave_workspace=False, out_outcome=Non
     )
 
 
-def create_new_account(chatgpt_api, mail_client, *, leave_workspace=False, out_outcome=None):
+def create_new_account(chatgpt_api, mail_client=None, *, leave_workspace=False, out_outcome=None, acc=None):
     """
     创建新账号。优先用直接注册模式（域名自动加入 workspace）。
     chatgpt_api 可为 None（直接注册不需要）。
     leave_workspace: 注册成功后是否退出 Team 走 personal OAuth。
     out_outcome:     透传给 create_account_direct 的可选统计容器。
+
+    Round 12 S4: `mail_client` 改为可选 — 缺省时按 acc 路由 / 走 get_mail_client()。
     """
     # 先检查 pending invites
+    mail_client = _resolve_mail_client_or_default(mail_client, acc=acc)
+
     if chatgpt_api and chatgpt_api.browser:
         logger.info("[创建] 先检查 pending invites...")
         completed = _check_pending_invites(
@@ -3509,7 +3574,9 @@ def create_new_account(chatgpt_api, mail_client, *, leave_workspace=False, out_o
     logger.info("[创建] 使用直接注册模式...")
     if chatgpt_api and chatgpt_api.browser:
         chatgpt_api.stop()
-    return create_account_direct(mail_client, leave_workspace=leave_workspace, out_outcome=out_outcome)
+    return create_account_direct(
+        mail_client, leave_workspace=leave_workspace, out_outcome=out_outcome
+    )
 
 
 def reinvite_account(chatgpt_api, mail_client, acc):

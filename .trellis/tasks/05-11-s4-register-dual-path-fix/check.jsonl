@@ -1,0 +1,2 @@
+{"file": ".trellis/tasks/05-11-s4-register-dual-path-fix/prd.md", "reason": "Acceptance Criteria + DoD 落地校验"}
+{"file": ".trellis/tasks/05-11-s2-mail-provider-fallback-gmx/prd.md", "reason": "S2 失败计数文件 mail_provider_state.json 复用约束,避免改 schema 回归"}

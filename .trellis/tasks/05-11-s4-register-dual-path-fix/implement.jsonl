@@ -1,0 +1,5 @@
+{"file": ".trellis/tasks/05-11-s4-register-dual-path-fix/prd.md", "reason": "本任务 PRD"}
+{"file": ".trellis/tasks/05-11-upstream-align-register-multimail-frontend-refresh/prd.md", "reason": "父 PRD,定义 S4 范围与上下游依赖"}
+{"file": ".trellis/tasks/05-11-s2-mail-provider-fallback-gmx/prd.md", "reason": "S2 PRD §Q2/Q3 — alias forwarding 留白与失败计数文件决策直接影响 S4 实现"}
+{"file": ".trellis/tasks/05-11-upstream-align-register-multimail-frontend-refresh/research/caveat-verified-2026-05-11.md", "reason": "OpenAI 黑名单 2026 Q2 状况与 Tier 重排,决定 alias+reader 配对模式"}
+{"file": ".upstream/manager.py", "reason": "上游 _complete_registration (1225) / create_account_direct (2030) / create_new_account (2106) baseline,对照本地 fork"}
