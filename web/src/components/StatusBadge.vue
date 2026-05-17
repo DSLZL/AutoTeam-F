@@ -51,7 +51,7 @@ const label = computed(() => statusLabel(props.status))
 const isGrace = computed(() => props.status === 'degraded_grace')
 const remainText = computed(() => (isGrace.value ? formatGraceRemain(props.graceUntil) : ''))
 const graceDate = computed(() => formatGraceDate(props.graceUntil))
-const urgencyClass = computed(() => `${graceUrgencyClass(props.graceUntil)} bg-black/30`)
+const urgencyClass = computed(() => `${graceUrgencyClass(props.graceUntil)} bg-surface border border-hairline`)
 const isGraceUrgent = computed(() => {
   if (!isGrace.value) return false
   const ms = graceRemainMs(props.graceUntil)
@@ -62,7 +62,8 @@ const isGraceUrgent = computed(() => {
 const bgStyle = computed(() => {
   const map = {
     active: 'linear-gradient(135deg, rgba(52, 211, 153, 0.20) 0%, rgba(20, 184, 166, 0.12) 100%)',
-    personal: 'linear-gradient(135deg, rgba(167, 139, 250, 0.22) 0%, rgba(217, 70, 239, 0.14) 100%)',
+    personal: 'linear-gradient(135deg, rgba(56, 189, 248, 0.20) 0%, rgba(59, 130, 246, 0.12) 100%)',
+    disabled: 'linear-gradient(135deg, rgba(214, 211, 209, 0.70) 0%, rgba(241, 245, 249, 0.60) 100%)',
     standby: 'linear-gradient(135deg, rgba(251, 191, 36, 0.18) 0%, rgba(245, 158, 11, 0.10) 100%)',
     degraded_grace: 'linear-gradient(135deg, rgba(251, 191, 36, 0.25) 0%, rgba(249, 115, 22, 0.22) 50%, rgba(244, 63, 94, 0.20) 100%)',
     auth_invalid: 'linear-gradient(135deg, rgba(244, 63, 94, 0.18) 0%, rgba(239, 68, 68, 0.12) 100%)',

@@ -2752,9 +2752,7 @@ class MainCodexSyncFlow(SessionCodexAuthFlow):
 
     def complete(self):
         info = super().complete()
-
-        from autoteam.cpa_sync import sync_main_codex_to_cpa
-
+        from autoteam.sync_targets import sync_main_codex_to_configured_targets as sync_main_codex_to_cpa
         sync_main_codex_to_cpa(info["auth_file"])
         return {
             "email": info.get("email"),

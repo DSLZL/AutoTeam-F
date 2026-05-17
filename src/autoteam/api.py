@@ -883,9 +883,18 @@ def _finish_main_codex_sync():
         _main_codex_step = None
         if _playwright_lock.locked():
             _playwright_lock.release()
+    from autoteam.sync_targets import describe_sync_targets, get_enabled_sync_targets
+
+    enabled_targets = get_enabled_sync_targets()
+    target_label = describe_sync_targets(enabled_targets)
+    message = (
+        f"主号 Codex 已同步到 {target_label}"
+        if enabled_targets
+        else "主号 Codex 已保存，本轮未启用远端同步目标"
+    )
     return {
         "status": "completed",
-        "message": "主号 Codex 已同步到 CPA",
+        "message": message,
         "codex": _main_codex_status(),
         "info": info,
     }
@@ -1494,14 +1503,25 @@ def post_main_codex_start():
             _playwright_lock.release()
 
     from autoteam.codex_auth import get_saved_main_auth_file
-    from autoteam.cpa_sync import sync_main_codex_to_cpa
+    from autoteam.sync_targets import (
+        describe_sync_targets,
+        get_enabled_sync_targets,
+        sync_main_codex_to_configured_targets as sync_main_codex_to_cpa,
+    )
 
     saved_auth_file = get_saved_main_auth_file()
     if saved_auth_file:
         sync_main_codex_to_cpa(saved_auth_file)
+        enabled_targets = get_enabled_sync_targets()
+        target_label = describe_sync_targets(enabled_targets)
+        message = (
+            f"主号 Codex 已同步到 {target_label}"
+            if enabled_targets
+            else "主号 Codex 已保存，本轮未启用远端同步目标"
+        )
         return {
             "status": "completed",
-            "message": "主号 Codex 已同步到 CPA",
+            "message": message,
             "codex": _main_codex_status(),
             "info": {"auth_file": saved_auth_file},
         }
@@ -1899,7 +1919,7 @@ def delete_accounts_batch(params: DeleteBatchParams):
     from autoteam.accounts import load_accounts
     from autoteam.chatgpt_api import ChatGPTTeamAPI
     from autoteam.cloudmail import CloudMailClient
-    from autoteam.cpa_sync import sync_to_cpa
+    from autoteam.sync_targets import sync_to_configured_targets as sync_to_cpa
 
     raw_emails = [(e or "").strip() for e in (params.emails or [])]
     emails = [e for e in raw_emails if e]
@@ -2364,7 +2384,7 @@ def post_account_login(params: LoginAccountParams):
                             quota_resets_at=quota_result_resets_at(info) or int(time.time() + 18000),
                         )
             # 同步到 CPA
-            from autoteam.cpa_sync import sync_to_cpa
+            from autoteam.sync_targets import sync_to_configured_targets as sync_to_cpa
 
             sync_to_cpa()
             return {
@@ -2448,7 +2468,7 @@ def get_status():
 @app.post("/api/sync")
 def post_sync():
     """同步认证文件到 CPA"""
-    from autoteam.cpa_sync import sync_to_cpa
+    from autoteam.sync_targets import sync_to_configured_targets as sync_to_cpa
 
     sync_to_cpa()
     return {"message": "同步完成"}
@@ -2769,7 +2789,7 @@ def get_logs(limit: int = 100, since: float = 0):
 
 @app.post("/api/sync/main-codex")
 def post_sync_main_codex():
-    """兼容旧接口：开始主号 Codex 登录并同步到 CPA。"""
+    """兼容旧接口：开始主号 Codex 登录并同步到已启用远端目标。"""
     return post_main_codex_start()
 
 

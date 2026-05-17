@@ -4,15 +4,13 @@
 
   <!-- 登录页 -->
   <div v-else-if="!authenticated" class="min-h-screen flex items-center justify-center px-4">
-    <div class="glass rounded-2xl p-8 w-full max-w-sm relative overflow-hidden">
-      <div class="absolute -top-20 -right-20 w-56 h-56 rounded-full opacity-40 blur-3xl pointer-events-none"
-        style="background: radial-gradient(circle, rgba(99, 102, 241, 0.45), transparent 60%);"></div>
-      <div class="relative">
-        <div class="text-[10px] uppercase tracking-[0.3em] text-indigo-300/70 mb-1">Account Operations</div>
-        <h1 class="text-2xl font-extrabold text-white mb-1 tracking-tight">AutoTeam</h1>
-        <p class="text-sm text-gray-400 mb-6">输入管理 API Key 进入控制台</p>
+    <div class="glass rounded-lg p-8 w-full max-w-sm">
+      <div>
+        <div class="text-[10px] uppercase tracking-[0.3em] text-ink-400 mb-1">Account Operations</div>
+        <h1 class="text-2xl font-extrabold text-ink-950 mb-1 tracking-tight">AutoTeam</h1>
+        <p class="text-sm text-ink-500 mb-6">输入管理 API Key 进入控制台</p>
         <div v-if="authError"
-          class="mb-4 px-3 py-2.5 rounded-lg text-sm bg-rose-500/10 text-rose-300 border border-rose-500/30">
+          class="mb-4 px-3 py-2.5 rounded-lg text-sm bg-rose-50 text-rose-700 border border-rose-200">
           {{ authError }}
         </div>
         <input
@@ -20,8 +18,8 @@
           type="password"
           placeholder="API Key"
           @keyup.enter="doLogin"
-          class="w-full px-3.5 py-2.5 bg-white/[0.03] border border-white/10 rounded-xl text-sm text-white
-                 font-mono placeholder:text-gray-600 focus-ring focus:border-indigo-400/40 mb-4 transition" />
+          class="w-full px-3.5 py-2.5 bg-surface border border-hairline rounded-lg text-sm text-ink-950
+                 font-mono placeholder:text-ink-400 focus-ring mb-4 transition" />
         <AtButton variant="primary" class="w-full" :loading="authLoading" :disabled="!inputKey" @click="doLogin">
           {{ authLoading ? '验证中…' : '进入控制台' }}
         </AtButton>
@@ -39,8 +37,8 @@
     <div class="flex-1 p-4 md:p-6 overflow-y-auto pb-20 md:pb-6 max-w-screen-2xl mx-auto w-full">
       <!-- 任务执行中提示 -->
       <div v-if="busyTask"
-        class="flex items-center gap-2.5 text-sm text-amber-300 mb-4 px-3 py-2 rounded-xl border border-amber-500/20 bg-amber-500/5 w-fit animate-rise">
-        <span class="animate-spin inline-block w-3.5 h-3.5 border-2 border-amber-300 border-t-transparent rounded-full"></span>
+        class="flex items-center gap-2.5 text-sm text-amber-800 mb-4 px-3 py-2 rounded-lg border border-amber-200 bg-amber-50 w-fit animate-rise">
+        <span class="animate-spin inline-block w-3.5 h-3.5 border-2 border-amber-700 border-t-transparent rounded-full"></span>
         <span class="font-medium">
           {{ busyTask.command === 'admin-login'
             ? '管理员登录中...'
@@ -54,20 +52,24 @@
       <Transition name="page" mode="out-in">
         <Dashboard v-if="currentPage === 'dashboard'" key="dashboard"
           :status="status" :loading="loading" :running-task="busyTask" :admin-status="adminStatus"
-          :master-health="masterHealth" @refresh="refresh" @reload-master-health="reloadMasterHealth" />
+          :register-failures="registerFailures" :register-failures-loading="registerFailuresLoading"
+          :register-failures-unavailable="registerFailuresUnavailable"
+          :master-health="masterHealth" @refresh="onActionRefresh" @reload-master-health="reloadMasterHealth" />
 
         <TeamMembers v-else-if="currentPage === 'team'" key="team" />
 
         <PoolPage v-else-if="currentPage === 'pool'" key="pool"
           :running-task="busyTask" :admin-status="adminStatus" :master-health="masterHealth" :status="status"
-          @task-started="onTaskStarted" @refresh="refresh" @reload-master-health="reloadMasterHealth" />
+          :rotate-stream="rotateStream"
+          @task-started="onTaskStarted" @refresh="onActionRefresh" @reload-master-health="reloadMasterHealth" />
 
         <SyncPage v-else-if="currentPage === 'sync'" key="sync"
           :running-task="busyTask" :admin-status="adminStatus"
-          @task-started="onTaskStarted" @refresh="refresh" />
+          :rotate-stream="rotateStream"
+          @task-started="onTaskStarted" @refresh="onActionRefresh" />
 
         <OAuthPage v-else-if="currentPage === 'oauth'" key="oauth"
-          :manual-account-status="manualAccountStatus" @refresh="refresh" @progress="onAdminProgress" />
+          :manual-account-status="manualAccountStatus" @refresh="onActionRefresh" @progress="onAdminProgress" />
 
         <TaskHistoryPage v-else-if="currentPage === 'tasks'" key="tasks"
           :tasks="tasks" />
@@ -77,7 +79,7 @@
         <Settings v-else-if="currentPage === 'settings'" key="settings"
           :admin-status="adminStatus" :codex-status="codexStatus"
           :master-health="masterHealth" :status="status"
-          @refresh="refresh" @admin-progress="onAdminProgress" @reload-master-health="reloadMasterHealth" />
+          @refresh="onActionRefresh" @admin-progress="onAdminProgress" @reload-master-health="reloadMasterHealth" />
       </Transition>
     </div>
 
@@ -86,8 +88,9 @@
 </template>
 
 <script setup>
-import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { api, setApiKey, clearApiKey } from './api.js'
+import { useAppState } from './composables/useAppState.js'
 import SetupPage from './components/SetupPage.vue'
 import Sidebar from './components/Sidebar.vue'
 import Dashboard from './components/Dashboard.vue'
@@ -109,27 +112,23 @@ const authError = ref('')
 const inputKey = ref('')
 const currentPage = ref('dashboard')
 
-const status = ref(null)
-const adminStatus = ref(null)
-const codexStatus = ref(null)
-const manualAccountStatus = ref(null)
-const tasks = ref([])
-const loading = ref(false)
-const runningTask = ref(null)
+const appState = useAppState(authenticated)
+const {
+  status,
+  adminStatus,
+  codexStatus,
+  manualAccountStatus,
+  registerFailures,
+  registerFailuresLoading,
+  registerFailuresUnavailable,
+  tasks,
+  loading,
+  busyTask,
+  rotateStream,
+} = appState
 // Round 9 — master-health 提到 App 级,4 个页面共享同一份(避免每页各刷各的)
 const masterHealth = ref(null)
 const masterHealthLoading = ref(false)
-const busyTask = computed(() => {
-  if (adminStatus.value?.login_in_progress) {
-    return { command: 'admin-login' }
-  }
-  if (codexStatus.value?.in_progress) {
-    return { command: 'main-codex-sync' }
-  }
-  return runningTask.value
-})
-
-let pollTimer = null
 
 async function checkAuth() {
   try {
@@ -161,7 +160,6 @@ async function doLogin() {
     } else {
       inputKey.value = ''
       refresh()
-      startPolling(600000)
     }
   } catch (e) {
     clearApiKey()
@@ -174,34 +172,10 @@ async function doLogin() {
 function doLogout() {
   clearApiKey()
   authenticated.value = false
-  stopPolling()
 }
 
 async function refresh() {
-  loading.value = true
-  try {
-    const [s, t, admin, codex, manualAccount] = await Promise.all([
-      api.getStatus(),
-      api.getTasks(),
-      api.getAdminStatus(),
-      api.getMainCodexStatus(),
-      api.getManualAccountStatus(),
-    ])
-    status.value = s
-    tasks.value = t
-    adminStatus.value = admin
-    codexStatus.value = codex
-    manualAccountStatus.value = manualAccount
-    runningTask.value = t.find(t => t.status === 'running' || t.status === 'pending') || null
-  } catch (e) {
-    if (e.status === 401) {
-      authenticated.value = false
-      return
-    }
-    console.error('刷新失败:', e)
-  } finally {
-    loading.value = false
-  }
+  await appState.refresh()
 }
 
 async function reloadMasterHealth(forceRefresh = false) {
@@ -210,37 +184,22 @@ async function reloadMasterHealth(forceRefresh = false) {
   try {
     masterHealth.value = await api.getMasterHealth(!!forceRefresh)
   } catch (e) {
-    console.error('加载母号健康度失败:', e)
+    masterHealth.value = null
   } finally {
     masterHealthLoading.value = false
   }
 }
 
 function onTaskStarted() {
-  startPolling(10000)
-  refresh()
+  appState.notifyActionStarted()
 }
 
 function onAdminProgress() {
-  startPolling(10000)
-  refresh()
+  appState.notifyActionStarted()
 }
 
-function startPolling(interval = 600000) {
-  stopPolling()
-  pollTimer = setInterval(async () => {
-    await refresh()
-    if (!busyTask.value && interval < 600000) {
-      startPolling(600000)
-    }
-  }, interval)
-}
-
-function stopPolling() {
-  if (pollTimer) {
-    clearInterval(pollTimer)
-    pollTimer = null
-  }
+function onActionRefresh() {
+  appState.notifyActionStarted()
 }
 
 async function checkSetup() {
@@ -257,7 +216,6 @@ function onSetupDone() {
   checkAuth().then(ok => {
     if (ok) {
       refresh()
-      startPolling(600000)
     }
   })
 }
@@ -279,11 +237,6 @@ onMounted(async () => {
   const ok = await checkAuth()
   if (ok) {
     refresh()
-    startPolling(600000)
   }
-})
-
-onUnmounted(() => {
-  stopPolling()
 })
 </script>

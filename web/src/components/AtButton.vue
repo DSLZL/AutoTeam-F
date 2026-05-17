@@ -10,7 +10,7 @@
     :disabled="disabled || loading"
     @click="onClick"
     :class="classes"
-    class="relative inline-flex items-center justify-center gap-2 font-medium rounded-xl
+    class="relative inline-flex items-center justify-center gap-2 font-medium rounded-lg
            lift-hover focus-ring select-none whitespace-nowrap
            disabled:cursor-not-allowed disabled:opacity-50">
     <span v-if="loading"
@@ -63,20 +63,20 @@ const sizeClasses = {
 
 const variantClasses = computed(() => {
   if (props.variant === 'primary') {
-    // round-12 F1 — text-on-accent 绕过 §Compat 层 text-white 翻转,保留白前景
+    // round-12 F1 — text-on-accent 绕过旧深色兼容层,保留高对比前景
     return [
       'text-on-accent border border-indigo-500/30',
-      'bg-gradient-to-br from-indigo-500 via-indigo-600 to-violet-600',
+      'bg-indigo-600',
       'shadow-card hover:shadow-ring-accent',
-      'hover:from-indigo-400 hover:via-indigo-500 hover:to-violet-500',
-      'active:from-indigo-600 active:via-indigo-700 active:to-violet-700',
+      'hover:bg-indigo-500',
+      'active:bg-indigo-700',
     ].join(' ')
   }
   if (props.variant === 'danger') {
     if (confirming.value) {
       return [
         'text-on-accent border border-rose-500/30',
-        'bg-gradient-to-br from-rose-500 via-red-600 to-rose-700',
+        'bg-rose-600',
         'shadow-card ring-2 ring-rose-400/40',
       ].join(' ')
     }

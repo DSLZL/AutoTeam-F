@@ -5,11 +5,7 @@
   - master_health inline 状态
 -->
 <template>
-  <div class="glass rounded-2xl p-5 lg:p-6 lift-hover relative overflow-hidden">
-    <!-- 背景装饰 -->
-    <div class="absolute -top-16 -right-16 w-64 h-64 rounded-full opacity-30 blur-3xl pointer-events-none"
-      :style="{ background: 'radial-gradient(circle, rgba(99, 102, 241, 0.30), transparent 60%)' }"></div>
-
+  <div class="glass rounded-lg p-5 lg:p-6 lift-hover relative overflow-hidden">
     <div class="relative flex flex-col lg:flex-row items-start lg:items-center gap-6">
       <!-- 左:donut + 中心总数 -->
       <div class="shrink-0">
@@ -25,7 +21,7 @@
       <!-- 中:四档数字 -->
       <div class="flex-1 grid grid-cols-2 sm:grid-cols-4 gap-3 w-full">
         <div v-for="card in cards" :key="card.key"
-          class="rounded-xl p-3 border bg-white/[0.02] hover:bg-white/[0.05] transition-all"
+          class="rounded-lg p-3 border bg-surface hover:bg-ink-50 transition-all"
           :class="card.borderClass">
           <div class="flex items-center gap-1.5 text-[10px] uppercase tracking-widest font-semibold"
             :class="card.labelClass">
@@ -43,13 +39,11 @@
 
       <!-- 右:master health inline -->
       <div class="shrink-0 lg:max-w-xs w-full lg:w-auto">
-        <div class="rounded-xl border p-3 flex items-start gap-3"
+        <div class="rounded-lg border p-3 flex items-start gap-3"
           :class="masterTone.border" :style="{ background: masterTone.bg }">
           <div class="shrink-0 w-9 h-9 rounded-lg flex items-center justify-center"
             :class="masterTone.iconWrap">
-            <svg viewBox="0 0 16 16" class="w-4 h-4">
-              <path :fill="masterTone.iconFill" d="M3 2.5h10v3a4.99 4.99 0 0 1-5 5 4.99 4.99 0 0 1-5-5v-3zM5 12.5h6v1.5H5z"/>
-            </svg>
+            <ShieldCheck class="w-4 h-4" :stroke-width="2" />
           </div>
           <div class="min-w-0 flex-1">
             <div class="text-[10px] uppercase tracking-widest font-semibold opacity-70" :class="masterTone.text">
@@ -72,6 +66,7 @@
 import { computed } from 'vue'
 import HealthDonut from './HealthDonut.vue'
 import { computeUsability, formatGraceRemain } from '../composables/useStatus.js'
+import { ShieldCheck } from 'lucide-vue-next'
 
 const props = defineProps({
   accounts: { type: Array, default: () => [] },
@@ -98,29 +93,29 @@ const cards = computed(() => [
     key: 'usable', label: '可用', value: counts.value.usable,
     color: 'rgba(52, 211, 153, 1)',
     borderClass: 'border-emerald-500/20',
-    labelClass: 'text-emerald-300',
-    valueClass: 'text-emerald-200',
+    labelClass: 'text-emerald-700',
+    valueClass: 'text-emerald-700',
   },
   {
     key: 'grace', label: 'Grace', value: counts.value.grace,
     color: 'rgba(251, 146, 60, 1)',
     borderClass: 'border-orange-500/30',
-    labelClass: 'text-orange-300',
-    valueClass: 'text-orange-200',
+    labelClass: 'text-orange-700',
+    valueClass: 'text-orange-700',
   },
   {
     key: 'standby', label: '待机', value: counts.value.standby,
     color: 'rgba(251, 191, 36, 1)',
     borderClass: 'border-amber-500/20',
-    labelClass: 'text-amber-300',
-    valueClass: 'text-amber-200',
+    labelClass: 'text-amber-700',
+    valueClass: 'text-amber-700',
   },
   {
     key: 'unusable', label: '不可用', value: counts.value.unusable,
     color: 'rgba(244, 63, 94, 1)',
     borderClass: 'border-rose-500/20',
-    labelClass: 'text-rose-300',
-    valueClass: 'text-rose-200',
+    labelClass: 'text-rose-700',
+    valueClass: 'text-rose-700',
   },
 ])
 
@@ -147,46 +142,41 @@ const masterTone = computed(() => {
   // Round 11:subscription_grace = healthy=True 但 grace 期内,渲染橙色提示 (而非 healthy 绿色)
   if (r === 'subscription_grace') {
     return {
-      bg: 'linear-gradient(135deg, rgba(251, 146, 60, 0.14), rgba(244, 63, 94, 0.10))',
-      border: 'border-orange-500/30',
-      iconWrap: 'bg-orange-500/15',
-      iconFill: 'rgb(253, 186, 116)',
-      text: 'text-orange-200',
+      bg: '#fff7ed',
+      border: 'border-orange-200',
+      iconWrap: 'bg-orange-100 text-orange-700',
+      text: 'text-orange-800',
     }
   }
   if (!m || m.healthy === true || r === 'active') {
     return {
-      bg: 'linear-gradient(135deg, rgba(16, 185, 129, 0.10), rgba(20, 184, 166, 0.05))',
-      border: 'border-emerald-500/20',
-      iconWrap: 'bg-emerald-500/15',
-      iconFill: 'rgb(110, 231, 183)',
-      text: 'text-emerald-200',
+      bg: '#ecfdf5',
+      border: 'border-emerald-200',
+      iconWrap: 'bg-emerald-100 text-emerald-700',
+      text: 'text-emerald-800',
     }
   }
   if (r === 'subscription_cancelled') {
     return {
-      bg: 'linear-gradient(135deg, rgba(251, 146, 60, 0.14), rgba(244, 63, 94, 0.10))',
-      border: 'border-orange-500/30',
-      iconWrap: 'bg-orange-500/15',
-      iconFill: 'rgb(253, 186, 116)',
-      text: 'text-orange-200',
+      bg: '#fff7ed',
+      border: 'border-orange-200',
+      iconWrap: 'bg-orange-100 text-orange-700',
+      text: 'text-orange-800',
     }
   }
   if (r === 'network_error') {
     return {
-      bg: 'linear-gradient(135deg, rgba(100, 116, 139, 0.14), rgba(71, 85, 105, 0.10))',
-      border: 'border-slate-500/25',
-      iconWrap: 'bg-slate-500/15',
-      iconFill: 'rgb(203, 213, 225)',
-      text: 'text-slate-200',
+      bg: '#f8fafc',
+      border: 'border-slate-200',
+      iconWrap: 'bg-slate-100 text-slate-700',
+      text: 'text-slate-700',
     }
   }
   return {
-    bg: 'linear-gradient(135deg, rgba(244, 63, 94, 0.14), rgba(220, 38, 38, 0.10))',
-    border: 'border-rose-500/30',
-    iconWrap: 'bg-rose-500/15',
-    iconFill: 'rgb(253, 164, 175)',
-    text: 'text-rose-200',
+    bg: '#fff1f2',
+    border: 'border-rose-200',
+    iconWrap: 'bg-rose-100 text-rose-700',
+    text: 'text-rose-800',
   }
 })
 

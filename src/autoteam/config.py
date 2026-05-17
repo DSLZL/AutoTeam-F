@@ -39,6 +39,13 @@ def _normalize_chatgpt_api_transport(value: str) -> str:
     return "playwright"
 
 
+def _normalize_sub2api_ws_mode(value: str) -> str:
+    mode = str(value or "").strip().lower()
+    if mode in {"off", "ctx_pool", "passthrough"}:
+        return mode
+    return "off"
+
+
 # CloudMail 配置
 CLOUDMAIL_BASE_URL = os.environ.get("CLOUDMAIL_BASE_URL", "")
 CLOUDMAIL_EMAIL = os.environ.get("CLOUDMAIL_EMAIL", "")
@@ -61,6 +68,7 @@ API_KEY = os.environ.get("API_KEY", "")
 
 # 自动巡检配置
 AUTO_CHECK_INTERVAL = _get_int_env("AUTO_CHECK_INTERVAL", 300)  # 巡检间隔（秒），默认 5 分钟
+AUTO_CHECK_TARGET_SEATS = max(1, _get_int_env("AUTO_CHECK_TARGET_SEATS", 3))
 AUTO_CHECK_THRESHOLD = _get_int_env("AUTO_CHECK_THRESHOLD", 10)  # 额度低于此百分比触发轮转，默认 10%
 AUTO_CHECK_MIN_LOW = _get_int_env("AUTO_CHECK_MIN_LOW", 2)  # 至少几个账号低于阈值才触发，默认 2
 
@@ -70,6 +78,23 @@ def _get_bool_env(name: str, default: bool) -> bool:
     if isinstance(raw, bool):
         return raw
     return str(raw).strip().lower() in ("1", "true", "yes", "on", "y", "t")
+
+
+# Sub2API target sync configuration. Empty required fields keep the target
+# disabled until explicitly configured.
+SUB2API_URL = os.environ.get("SUB2API_URL", "")
+SUB2API_EMAIL = os.environ.get("SUB2API_EMAIL", "")
+SUB2API_PASSWORD = os.environ.get("SUB2API_PASSWORD", "")
+SUB2API_GROUP = os.environ.get("SUB2API_GROUP", "")
+SUB2API_PROXY = _get_str_env("SUB2API_PROXY", "")
+SUB2API_CONCURRENCY = _get_int_env("SUB2API_CONCURRENCY", 10)
+SUB2API_PRIORITY = _get_int_env("SUB2API_PRIORITY", 1)
+SUB2API_RATE_MULTIPLIER = _get_float_env("SUB2API_RATE_MULTIPLIER", 1)
+SUB2API_AUTO_PAUSE_ON_EXPIRED = _get_bool_env("SUB2API_AUTO_PAUSE_ON_EXPIRED", True)
+SUB2API_MODEL_WHITELIST = _get_str_env("SUB2API_MODEL_WHITELIST", "")
+SUB2API_OPENAI_WS_MODE = _normalize_sub2api_ws_mode(_get_str_env("SUB2API_OPENAI_WS_MODE", "off"))
+SUB2API_OPENAI_PASSTHROUGH = _get_bool_env("SUB2API_OPENAI_PASSTHROUGH", False)
+SUB2API_OVERWRITE_ACCOUNT_SETTINGS = _get_bool_env("SUB2API_OVERWRITE_ACCOUNT_SETTINGS", False)
 
 
 # Round 12 S3 — auth_repair 状态机配置(cherry-pick from upstream).

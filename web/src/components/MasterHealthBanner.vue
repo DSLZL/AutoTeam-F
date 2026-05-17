@@ -10,12 +10,10 @@
     refresh: 立即重测按钮触发
 -->
 <template>
-  <div v-if="visible" class="relative overflow-hidden rounded-2xl border lift-hover"
-    :class="[tone.border, 'shadow-2xl']" :style="containerStyle" role="alert">
-    <!-- 背景装饰 -->
-    <div class="absolute inset-0 pointer-events-none opacity-60" :style="meshStyle"></div>
+  <div v-if="visible" class="relative overflow-hidden rounded-lg border lift-hover shadow-card"
+    :class="[tone.border, tone.bg]" role="alert">
     <!-- 角标 -->
-    <div class="absolute top-0 right-0 px-3 py-1 text-[10px] font-mono uppercase tracking-widest rounded-bl-xl"
+    <div class="absolute top-0 right-0 px-3 py-1 text-[10px] font-mono uppercase tracking-widest rounded-bl-lg"
       :class="[tone.tagBg, tone.tagText]">
       {{ tone.tag }}
     </div>
@@ -23,22 +21,12 @@
     <div class="relative px-5 py-4">
       <div class="flex items-start gap-4">
         <!-- 图标 -->
-        <div class="relative shrink-0 w-11 h-11 rounded-xl flex items-center justify-center"
+        <div class="relative shrink-0 w-11 h-11 rounded-lg flex items-center justify-center"
           :class="tone.iconWrap">
-          <svg v-if="severity === 'critical'" viewBox="0 0 24 24" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 9v4M12 17h.01M5.07 19h13.86c1.54 0 2.5-1.67 1.73-3L13.73 4a2 2 0 00-3.46 0L3.34 16c-.77 1.33.19 3 1.73 3z" stroke-linejoin="round" stroke-linecap="round"/>
-          </svg>
-          <svg v-else-if="severity === 'warning'" viewBox="0 0 24 24" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="9"/>
-            <path d="M12 7v6M12 16h.01" stroke-linecap="round"/>
-          </svg>
-          <svg v-else-if="severity === 'info'" viewBox="0 0 24 24" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="9"/>
-            <path d="M11 11h1v5h1M12 7.5h.01" stroke-linecap="round"/>
-          </svg>
-          <svg v-else viewBox="0 0 24 24" class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M5 13l4 4L19 7" stroke-linecap="round" stroke-linejoin="round"/>
-          </svg>
+          <AlertTriangle v-if="severity === 'critical'" class="w-5 h-5" :stroke-width="2" />
+          <CircleAlert v-else-if="severity === 'warning'" class="w-5 h-5" :stroke-width="2" />
+          <Info v-else-if="severity === 'info'" class="w-5 h-5" :stroke-width="2" />
+          <Check v-else class="w-5 h-5" :stroke-width="2" />
 
           <span v-if="severity === 'critical'" class="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-rose-400">
             <span class="absolute inset-0 rounded-full bg-rose-400 animate-ping opacity-75"></span>
@@ -49,7 +37,7 @@
         <div class="flex-1 min-w-0">
           <div class="flex items-center gap-3 flex-wrap">
             <h3 class="text-base font-bold" :class="tone.title">{{ title }}</h3>
-            <span v-if="graceCountdown" class="font-mono text-xs px-2 py-0.5 rounded-md bg-black/30 border border-white/10"
+            <span v-if="graceCountdown" class="font-mono text-xs px-2 py-0.5 rounded-md bg-surface border border-hairline"
               :class="graceCountdownColor">
               grace · {{ graceCountdown }}
             </span>
@@ -83,6 +71,7 @@
 <script setup>
 import { computed } from 'vue'
 import { formatGraceRemain, graceUrgencyClass, masterHealthSeverity } from '../composables/useStatus.js'
+import { AlertTriangle, Check, CircleAlert, Info } from 'lucide-vue-next'
 
 const props = defineProps({
   masterHealth: { type: Object, default: null },
@@ -186,54 +175,39 @@ const tone = computed(() => {
   if (severity.value === 'warning') {
     return {
       tag: 'GRACE',
-      tagBg: 'bg-amber-500/30',
-      tagText: 'text-amber-100',
-      iconWrap: 'bg-amber-500/15 text-amber-300 border border-amber-400/30',
-      title: 'text-amber-100',
-      body: 'text-amber-100/80',
-      border: 'border-amber-500/40',
-      btn: 'bg-amber-500/15 hover:bg-amber-500/25 text-amber-100 border-amber-400/40',
+      tagBg: 'bg-amber-100',
+      tagText: 'text-amber-800',
+      bg: 'bg-amber-50',
+      iconWrap: 'bg-amber-100 text-amber-700 border border-amber-200',
+      title: 'text-amber-950',
+      body: 'text-amber-800',
+      border: 'border-amber-200',
+      btn: 'bg-surface hover:bg-amber-100 text-amber-800 border-amber-200',
     }
   }
   if (severity.value === 'info') {
     return {
       tag: 'STALE',
-      tagBg: 'bg-slate-500/30',
-      tagText: 'text-slate-100',
-      iconWrap: 'bg-slate-500/15 text-slate-300 border border-slate-400/30',
-      title: 'text-slate-100',
-      body: 'text-slate-200/80',
-      border: 'border-slate-500/30',
-      btn: 'bg-slate-500/15 hover:bg-slate-500/25 text-slate-100 border-slate-400/30',
+      tagBg: 'bg-slate-100',
+      tagText: 'text-slate-700',
+      bg: 'bg-slate-50',
+      iconWrap: 'bg-slate-100 text-slate-700 border border-slate-200',
+      title: 'text-slate-950',
+      body: 'text-slate-700',
+      border: 'border-slate-200',
+      btn: 'bg-surface hover:bg-slate-100 text-slate-700 border-slate-200',
     }
   }
   return {
     tag: 'ALERT',
-    tagBg: 'bg-rose-500/30',
-    tagText: 'text-rose-100',
-    iconWrap: 'bg-rose-500/15 text-rose-300 border border-rose-400/30',
-    title: 'text-rose-100',
-    body: 'text-rose-100/85',
-    border: 'border-rose-500/40',
-    btn: 'bg-rose-500/15 hover:bg-rose-500/25 text-rose-100 border-rose-400/40',
+    tagBg: 'bg-rose-100',
+    tagText: 'text-rose-800',
+    bg: 'bg-rose-50',
+    iconWrap: 'bg-rose-100 text-rose-700 border border-rose-200',
+    title: 'text-rose-950',
+    body: 'text-rose-800',
+    border: 'border-rose-200',
+    btn: 'bg-surface hover:bg-rose-100 text-rose-800 border-rose-200',
   }
-})
-
-const containerStyle = computed(() => {
-  const bg = {
-    warning: 'linear-gradient(135deg, rgba(120, 53, 15, 0.45) 0%, rgba(154, 52, 18, 0.35) 60%, rgba(159, 18, 57, 0.30) 100%)',
-    critical: 'linear-gradient(135deg, rgba(127, 29, 29, 0.55) 0%, rgba(159, 18, 57, 0.42) 100%)',
-    info: 'linear-gradient(135deg, rgba(30, 41, 59, 0.55) 0%, rgba(15, 23, 42, 0.45) 100%)',
-  }
-  return { background: bg[severity.value] || bg.critical }
-})
-
-const meshStyle = computed(() => {
-  const m = {
-    warning: 'radial-gradient(ellipse 60% 60% at 90% 10%, rgba(251, 146, 60, 0.18), transparent 60%), radial-gradient(ellipse 60% 80% at 10% 100%, rgba(251, 113, 133, 0.12), transparent 60%)',
-    critical: 'radial-gradient(ellipse 70% 70% at 95% 0%, rgba(251, 113, 133, 0.20), transparent 60%), radial-gradient(ellipse 50% 70% at 0% 100%, rgba(220, 38, 38, 0.18), transparent 60%)',
-    info: 'radial-gradient(ellipse 60% 60% at 100% 0%, rgba(148, 163, 184, 0.12), transparent 60%)',
-  }
-  return { background: m[severity.value] || m.critical }
 })
 </script>

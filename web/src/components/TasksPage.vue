@@ -1,6 +1,6 @@
 <template>
   <div>
-    <h2 class="text-xl font-bold text-white mb-6">操作 & 任务</h2>
+    <h2 class="text-xl font-bold text-ink-950 mb-6">操作 & 任务</h2>
     <TaskPanel :running-task="runningTask" :admin-status="adminStatus" @task-started="$emit('task-started')" @refresh="$emit('refresh')" />
     <TaskHistory :tasks="tasks" />
   </div>

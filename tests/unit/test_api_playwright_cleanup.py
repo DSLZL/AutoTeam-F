@@ -42,6 +42,48 @@ def test_launch_browser_stops_playwright_when_browser_launch_fails(tmp_path, mon
     assert client.page is None
 
 
+def test_launch_browser_uses_unified_context_options(monkeypatch):
+    captured = {}
+
+    class FakePage:
+        def close(self):
+            captured["closed_page"] = True
+
+    class FakeContext:
+        def close(self):
+            captured["closed_context"] = True
+
+        def new_page(self):
+            return FakePage()
+
+    class FakePlaywright:
+        def __init__(self):
+            self.chromium = self
+
+        def launch(self, **_kwargs):
+            return self
+
+        def new_context(self, **kwargs):
+            captured["kwargs"] = kwargs
+            return FakeContext()
+
+        def stop(self):
+            captured["stopped"] = True
+
+    class FakeSyncPlaywright:
+        def start(self):
+            return FakePlaywright()
+
+    monkeypatch.setattr(chatgpt_api, "sync_playwright", lambda: FakeSyncPlaywright())
+    monkeypatch.setattr(chatgpt_api, "get_playwright_launch_options", lambda: {})
+    monkeypatch.setattr(chatgpt_api, "get_playwright_context_options", lambda: {"viewport": {"width": 100, "height": 200}})
+
+    client = chatgpt_api.ChatGPTTeamAPI()
+    client._launch_browser()
+
+    assert captured["kwargs"] == {"viewport": {"width": 100, "height": 200}}
+
+
 def test_chatgpt_stop_closes_page_context_browser_and_playwright():
     calls = []
 
@@ -153,6 +195,7 @@ def test_api_fetch_browser_fallback_cleans_partial_browser_session():
 
 def test_complete_registration_closes_page_context_browser_when_invite_registration_raises(monkeypatch):
     calls = []
+    captured = {}
 
     class FakeClosable:
         def __init__(self, name):
@@ -172,7 +215,8 @@ def test_complete_registration_closes_page_context_browser_when_invite_registrat
         def __init__(self):
             super().__init__("browser")
 
-        def new_context(self, **_kwargs):
+        def new_context(self, **kwargs):
+            captured["kwargs"] = kwargs
             return FakeContext()
 
     class FakeChromium:
@@ -193,6 +237,7 @@ def test_complete_registration_closes_page_context_browser_when_invite_registrat
         raise RuntimeError("registration crashed")
 
     monkeypatch.setattr(manager, "sync_playwright", lambda: FakeSyncPlaywright())
+    monkeypatch.setattr(manager, "get_playwright_context_options", lambda: {"locale": "zh-CN"})
     monkeypatch.setattr(invite, "register_with_invite", fail_register)
 
     with pytest.raises(RuntimeError, match="registration crashed"):
@@ -204,10 +249,12 @@ def test_complete_registration_closes_page_context_browser_when_invite_registrat
         )
 
     assert calls == ["close:page", "close:context", "close:browser"]
+    assert captured["kwargs"] == {"locale": "zh-CN"}
 
 
 def test_register_direct_once_cleans_browser_context_on_unhandled_page_error(monkeypatch):
     calls = []
+    captured = {}
 
     class FakePage:
         url = "about:blank"
@@ -226,7 +273,8 @@ def test_register_direct_once_cleans_browser_context_on_unhandled_page_error(mon
             calls.append("close:context")
 
     class FakeBrowser:
-        def new_context(self, **_kwargs):
+        def new_context(self, **kwargs):
+            captured["kwargs"] = kwargs
             return FakeContext()
 
         def close(self):
@@ -247,11 +295,13 @@ def test_register_direct_once_cleans_browser_context_on_unhandled_page_error(mon
             return False
 
     monkeypatch.setattr(manager, "sync_playwright", lambda: FakeSyncPlaywright())
+    monkeypatch.setattr(manager, "get_playwright_context_options", lambda: {"timezone_id": "Asia/Shanghai"})
 
     with pytest.raises(RuntimeError, match="navigation exploded"):
         manager._register_direct_once(object(), "child@example.com", "password")
 
     assert calls == ["close:page", "close:context", "close:browser"]
+    assert captured["kwargs"] == {"timezone_id": "Asia/Shanghai"}
 
 
 def test_registration_and_oauth_paths_use_unified_playwright_cleanup():
@@ -261,6 +311,13 @@ def test_registration_and_oauth_paths_use_unified_playwright_cleanup():
     assert "browser.close()" not in inspect.getsource(codex_auth.login_codex_via_browser)
     assert "close_playwright_objects" in inspect.getsource(manager._register_direct_once)
     assert "close_playwright_objects" in inspect.getsource(codex_auth.login_codex_via_browser)
+    assert "get_playwright_context_options()" in inspect.getsource(chatgpt_api.ChatGPTTeamAPI._launch_browser)
+    assert "get_playwright_context_options()" in inspect.getsource(invite.run)
+    assert "get_playwright_context_options()" in inspect.getsource(codex_auth.login_codex_via_browser)
+    assert "get_playwright_context_options()" in inspect.getsource(manager._complete_registration)
+    assert "get_playwright_context_options()" in inspect.getsource(manager._register_direct_once)
+    assert "viewport={\"width\": 1280, \"height\": 800}" not in inspect.getsource(chatgpt_api.ChatGPTTeamAPI._launch_browser)
+    assert "user_agent=\"Mozilla/5.0" not in inspect.getsource(chatgpt_api.ChatGPTTeamAPI._launch_browser)
 
 
 def test_session_codex_auth_flow_stops_chatgpt_when_page_start_fails(monkeypatch):

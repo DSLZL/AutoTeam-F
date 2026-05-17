@@ -47,9 +47,9 @@ export function useStatusQuery(options = {}) {
 // ['status'],vue-query 自动重拉(refetchOnMount + dedup)。
 //
 // 返回 useRotateStream 的所有 ref,组件可同时拿来渲染"实时进度"面板。
-export function useStatusInvalidator() {
+export function useStatusInvalidator(options = {}) {
   const queryClient = useQueryClient()
-  const stream = useRotateStream()
+  const stream = options.stream || useRotateStream(options.streamOptions || {})
   const offTransition = stream.onTransition(() => {
     // invalidateQueries 自身是 promise + dedup,不需要 debounce;
     // 若 30s polling 与 SSE 重叠,vue-query 会合并成单次网络请求。
@@ -65,6 +65,7 @@ export const STATUS_LABELS = {
   standby: 'Standby',
   pending: 'Pending',
   personal: 'Personal',
+  disabled: 'Disabled',
   auth_invalid: '认证失效',
   orphan: '孤立',
   degraded_grace: 'Grace',
@@ -82,12 +83,12 @@ export const STATUS_STYLES = {
     gradient: 'from-emerald-400/20 via-emerald-500/10 to-teal-500/15',
   },
   personal: {
-    base: 'bg-violet-500/[0.08]',
-    text: 'text-violet-300',
-    border: 'border-violet-400/30',
-    dot: 'bg-violet-400',
+    base: 'bg-sky-500/[0.08]',
+    text: 'text-sky-300',
+    border: 'border-sky-400/30',
+    dot: 'bg-sky-400',
     pulse: false,
-    gradient: 'from-violet-400/20 via-fuchsia-500/15 to-purple-500/15',
+    gradient: 'from-sky-400/20 via-blue-500/10 to-indigo-500/15',
   },
   standby: {
     base: 'bg-amber-500/[0.08]',
@@ -96,6 +97,14 @@ export const STATUS_STYLES = {
     dot: 'bg-amber-400',
     pulse: false,
     gradient: 'from-amber-400/15 via-yellow-500/10 to-amber-600/15',
+  },
+  disabled: {
+    base: 'bg-stone-500/[0.08]',
+    text: 'text-stone-700',
+    border: 'border-stone-300',
+    dot: 'bg-stone-500',
+    pulse: false,
+    gradient: 'from-stone-200/70 via-stone-100/50 to-slate-100/60',
   },
   // GRACE — 橙→红渐变,grace_until 越接近 0 越红
   degraded_grace: {
@@ -147,12 +156,15 @@ export function statusStyle(s) {
   return STATUS_STYLES[s] || STATUS_STYLES.pending
 }
 
-// F1 — "实际可用性" 派生:四档 ✅ ⚠️ 💤 ❌
+// F1 — "实际可用性" 派生四档状态
 // 输入:account 对象(含 status, last_quota, grace_until 等)
 // 输出:{ kind: 'usable'|'grace'|'standby'|'unusable', label, hint, tone }
 export function computeUsability(acc) {
   if (!acc) return { kind: 'unknown', label: '—', hint: '', tone: 'neutral' }
   const s = acc.status
+  if (s === 'disabled') {
+    return { kind: 'standby', label: '禁用', hint: '已从自动化流程排除', tone: 'neutral' }
+  }
   const q = acc.last_quota || {}
   const noQuota = q.primary_total === 0 || q.no_quota === true
   const hasError = q.error || q.status === 'auth_error'

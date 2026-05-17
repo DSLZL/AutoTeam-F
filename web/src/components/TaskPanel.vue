@@ -1,14 +1,14 @@
 <template>
-  <div class="glass rounded-2xl p-5">
+  <div class="glass rounded-lg p-5">
     <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
       <div>
-        <h2 class="text-base font-bold text-white tracking-tight">{{ panelTitle }}</h2>
-        <p class="text-[11px] text-gray-500 mt-0.5">点击按钮提交后台任务,轮询返回结果</p>
+        <h2 class="text-base font-bold text-ink-950 tracking-tight">{{ panelTitle }}</h2>
+        <p class="text-[11px] text-ink-500 mt-0.5">提交后立即进入后台任务观察窗口,完成后自动同步状态。</p>
       </div>
       <div v-if="runningTask" class="flex items-center gap-2 text-xs">
-        <span class="text-gray-500 uppercase tracking-widest text-[10px]">Running</span>
-        <span class="font-mono text-amber-300 px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30">{{ runningTask.command }}</span>
-        <span class="font-mono text-gray-600">{{ runningTask.task_id ? runningTask.task_id.slice(0, 8) : '' }}</span>
+        <span class="text-ink-500 uppercase tracking-widest text-[10px]">Running</span>
+        <span class="font-mono text-amber-800 px-2 py-0.5 rounded bg-amber-50 border border-amber-200">{{ runningTask.command }}</span>
+        <span class="font-mono text-ink-600">{{ runningTask.task_id ? runningTask.task_id.slice(0, 8) : '' }}</span>
         <AtButton variant="danger" size="sm" :loading="cancelling" :disabled="cancelRequested" @click="cancelTask">
           {{ cancelRequested ? '停止中…' : '停止任务' }}
         </AtButton>
@@ -16,7 +16,7 @@
     </div>
 
     <div v-if="showAdminHint"
-      class="mb-4 px-4 py-2.5 rounded-xl text-sm border bg-amber-500/10 text-amber-300 border-amber-500/30">
+      class="mb-4 px-4 py-2.5 rounded-lg text-sm border bg-amber-50 text-amber-800 border-amber-200">
       {{ adminHint }}
     </div>
 
@@ -25,21 +25,22 @@
       <button v-for="action in visibleActions" :key="action.key"
         @click="execute(action)"
         :disabled="isDisabled(action)"
-        class="relative h-10 px-4 rounded-xl text-sm font-semibold border transition-all
+        class="relative h-10 px-4 rounded-lg text-sm font-semibold border transition-all
                lift-hover focus-ring select-none whitespace-nowrap
                disabled:opacity-50 disabled:cursor-not-allowed disabled:bg-ink-100 disabled:text-ink-400 disabled:border-hairline"
         :class="actionColorClass(action)">
         <span class="inline-flex items-center gap-2">
-          <component :is="action.icon" class="w-4 h-4 shrink-0" :stroke-width="2" />
-          {{ action.label }}
+          <span v-if="isSubmitting(action)" class="inline-block w-4 h-4 rounded-full border-2 border-current border-t-transparent animate-spin"></span>
+          <component v-else :is="action.icon" class="w-4 h-4 shrink-0" :stroke-width="2" />
+          {{ isSubmitting(action) ? '提交中' : action.label }}
         </span>
       </button>
     </div>
 
     <!-- round-12 F2 — rotate 实时进度面板 (SSE) -->
-    <div class="mt-4 rounded-xl border border-hairline bg-surface">
+    <div class="mt-4 rounded-lg border border-hairline bg-surface">
       <button type="button"
-        class="w-full flex items-center justify-between gap-3 px-4 py-2.5 text-sm focus-ring rounded-xl"
+        class="w-full flex items-center justify-between gap-3 px-4 py-2.5 text-sm focus-ring rounded-lg"
         @click="showProgress = !showProgress">
         <span class="inline-flex items-center gap-2 font-semibold text-ink-700">
           <Activity class="w-4 h-4" :class="rotateStream.isConnected.value ? 'text-emerald-600' : 'text-ink-400'" :stroke-width="2" />
@@ -78,30 +79,30 @@
 
     <!-- 注册域名切换(仅 pool 模式可见) -->
     <div v-if="mode === 'pool'"
-      class="mt-5 p-3 rounded-xl border border-white/[0.04] bg-white/[0.02] flex flex-wrap items-center gap-2 text-sm">
-      <span class="text-[10px] uppercase tracking-widest text-gray-500 font-semibold mr-1">注册域名</span>
-      <span class="text-gray-600">@</span>
+      class="mt-5 p-3 rounded-lg border border-hairline bg-ink-50 flex flex-wrap items-center gap-2 text-sm">
+      <span class="text-[10px] uppercase tracking-widest text-ink-500 font-semibold mr-1">注册域名</span>
+      <span class="text-ink-400">@</span>
       <input v-model="domainInput" type="text" placeholder="your-domain.com"
-        class="flex-1 min-w-[180px] px-3 py-1.5 bg-black/30 border border-white/10 rounded-lg text-white text-sm font-mono focus-ring focus:border-indigo-400/40 transition" />
+        class="flex-1 min-w-[180px] px-3 py-1.5 bg-surface border border-hairline rounded-lg text-ink-950 text-sm font-mono focus-ring transition" />
       <AtButton variant="primary" size="sm" :loading="domainBusy" :disabled="!domainInput" @click="saveDomain">
         保存并验证
       </AtButton>
-      <span v-if="currentDomain" class="text-[11px] text-gray-500 font-mono">当前: @{{ currentDomain }}</span>
-      <span v-if="domainMsg" class="ml-1 text-[11px] font-medium" :class="domainMsgOk ? 'text-emerald-300' : 'text-rose-300'">{{ domainMsg }}</span>
+      <span v-if="currentDomain" class="text-[11px] text-ink-500 font-mono">当前: @{{ currentDomain }}</span>
+      <span v-if="domainMsg" class="ml-1 text-[11px] font-medium" :class="domainMsgOk ? 'text-emerald-700' : 'text-rose-700'">{{ domainMsg }}</span>
     </div>
 
     <!-- 参数输入 -->
     <div v-if="showParams"
-      class="mt-4 p-3 rounded-xl border border-indigo-500/30 bg-indigo-500/5 flex items-center gap-3 animate-rise">
-      <label class="text-[11px] uppercase tracking-widest text-indigo-300 font-semibold">{{ paramLabel }}</label>
+      class="mt-4 p-3 rounded-lg border border-indigo-200 bg-indigo-50 flex items-center gap-3 animate-rise">
+      <label class="text-[11px] uppercase tracking-widest text-indigo-700 font-semibold">{{ paramLabel }}</label>
       <input v-model.number="paramValue" type="number" min="1" :max="paramMax"
-        class="w-24 px-3 py-1.5 bg-black/30 border border-white/10 rounded-lg text-white text-sm font-mono focus-ring focus:border-indigo-400/40 tabular" />
-      <AtButton variant="primary" size="sm" @click="confirmAction">确认执行</AtButton>
+        class="w-24 px-3 py-1.5 bg-surface border border-hairline rounded-lg text-ink-950 text-sm font-mono focus-ring tabular" />
+      <AtButton variant="primary" size="sm" :loading="!!executingActionKey" @click="confirmAction">确认执行</AtButton>
       <AtButton variant="ghost" size="sm" @click="showParams = false">取消</AtButton>
     </div>
 
     <!-- 结果提示 -->
-    <div v-if="message" class="mt-4 px-4 py-2.5 rounded-xl text-sm border animate-rise" :class="messageClass">
+    <div v-if="message" class="mt-4 px-4 py-2.5 rounded-lg text-sm border animate-rise" :class="messageClass">
       {{ message }}
     </div>
   </div>
@@ -127,7 +128,7 @@ import {
 } from 'lucide-vue-next'
 import { api } from '../api.js'
 import AtButton from './AtButton.vue'
-import { useStatusInvalidator } from '../composables/useStatus.js'
+import { useRotateStream } from '../composables/useRotateStream.js'
 import { statusLabel } from '../composables/useStatus.js'
 
 const props = defineProps({
@@ -136,13 +137,13 @@ const props = defineProps({
   mode: { type: String, default: 'all' },
   // Round 8 — 母号订阅健康度,degraded 时禁用 fill-personal
   masterHealth: { type: Object, default: null },
+  rotateStream: { type: Object, default: null },
 })
 const emit = defineEmits(['task-started', 'refresh'])
 
-// round-12 F2/F3 — SSE 实时进度 + vue-query invalidation
-// useStatusInvalidator 内部:SSE 事件 → invalidateQueries(['status'])
-// 它返回 useRotateStream 的 reactive ref,模板里直接 v-for events
-const rotateStream = useStatusInvalidator()
+// round-12 F2/F3 — 共享 SSE 流直接用于实时进度展示;
+// App 级状态层负责统一 invalidation,这里不再额外挂一层桥接。
+const rotateStream = props.rotateStream || useRotateStream()
 const showProgress = ref(false)
 
 function transitionIcon(ev) {
@@ -179,8 +180,8 @@ function formatTransitionTime(ts) {
 const actions = [
   { key: 'rotate', group: 'pool', label: '智能轮转', icon: RotateCw, method: 'startRotate', needParam: true, paramName: 'target', tone: 'primary' },
   { key: 'check', group: 'pool', label: '检查额度', icon: ChartPie, method: 'startCheck', needParam: false, tone: 'emerald' },
-  { key: 'fill', group: 'pool', label: '补满成员', icon: Plus, method: 'startFill', needParam: true, paramName: 'target', tone: 'violet' },
-  { key: 'fill-personal', group: 'pool', label: '生成免费号', icon: Coins, method: 'startFillPersonal', needParam: true, paramName: 'count', tone: 'fuchsia' },
+  { key: 'fill', group: 'pool', label: '补满成员', icon: Plus, method: 'startFill', needParam: true, paramName: 'target', tone: 'teal' },
+  { key: 'fill-personal', group: 'pool', label: '生成免费号', icon: Coins, method: 'startFillPersonal', needParam: true, paramName: 'count', tone: 'lime' },
   { key: 'add', group: 'pool', label: '添加账号', icon: UserPlus, method: 'startAdd', needParam: false, tone: 'amber' },
   { key: 'cleanup', group: 'pool', label: '清理成员', icon: Brush, method: 'startCleanup', needParam: false, tone: 'rose' },
   { key: 'sync', group: 'sync', label: '同步 CPA', icon: RefreshCw, method: 'postSync', needParam: false, sync: true, allowWithoutAdmin: true, tone: 'cyan' },
@@ -193,6 +194,7 @@ const paramLabel = ref('')
 const paramValue = ref(5)
 const paramMax = ref(20)
 const pendingAction = ref(null)
+const executingActionKey = ref('')
 
 const cancelling = ref(false)
 const cancelRequested = ref(false)
@@ -218,10 +220,11 @@ async function cancelTask() {
     const r = await api.cancelTask()
     cancelRequested.value = true
     message.value = r.message || '已请求停止'
-    messageClass.value = 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+    messageClass.value = 'bg-amber-50 text-amber-800 border-amber-200'
+    emit('refresh')
   } catch (e) {
     message.value = `停止失败: ${e.message}`
-    messageClass.value = 'bg-rose-500/10 text-rose-300 border-rose-500/30'
+    messageClass.value = 'bg-rose-50 text-rose-700 border-rose-200'
   } finally {
     cancelling.value = false
     setTimeout(() => { if (messageClass.value.includes('amber')) message.value = '' }, 10000)
@@ -291,10 +294,15 @@ const masterDegraded = computed(() => !!(
 ))
 
 function isDisabled(action) {
+  if (executingActionKey.value) return true
   if (props.runningTask) return true
   if (!adminReady.value && !action.allowWithoutAdmin) return true
   if (action.key === 'fill-personal' && masterDegraded.value) return true
   return false
+}
+
+function isSubmitting(action) {
+  return executingActionKey.value === action.key
 }
 
 // 按 tone 给按钮配色 — round-12 F1 Bright v1
@@ -302,8 +310,8 @@ function actionColorClass(action) {
   const map = {
     primary: 'text-indigo-700 bg-indigo-50 border-indigo-200 hover:bg-indigo-100 hover:border-indigo-300',
     emerald: 'text-emerald-700 bg-emerald-50 border-emerald-200 hover:bg-emerald-100',
-    violet: 'text-violet-700 bg-violet-50 border-violet-200 hover:bg-violet-100',
-    fuchsia: 'text-fuchsia-700 bg-fuchsia-50 border-fuchsia-200 hover:bg-fuchsia-100',
+    teal: 'text-teal-700 bg-teal-50 border-teal-200 hover:bg-teal-100',
+    lime: 'text-lime-700 bg-lime-50 border-lime-200 hover:bg-lime-100',
     amber: 'text-amber-800 bg-amber-50 border-amber-200 hover:bg-amber-100',
     rose: 'text-rose-700 bg-rose-50 border-rose-200 hover:bg-rose-100',
     cyan: 'text-cyan-700 bg-cyan-50 border-cyan-200 hover:bg-cyan-100',
@@ -339,21 +347,24 @@ async function confirmAction() {
 }
 
 async function doExecute(action, param) {
+  executingActionKey.value = action.key
   try {
     if (action.sync) {
       const result = await api[action.method]()
       message.value = result.message || '操作完成'
-      messageClass.value = 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+      messageClass.value = 'bg-emerald-50 text-emerald-700 border-emerald-200'
       emit('refresh')
     } else {
       const result = await api[action.method](param)
       message.value = `任务已提交: ${result.task_id}`
-      messageClass.value = 'bg-blue-500/10 text-blue-300 border-blue-500/30'
+      messageClass.value = 'bg-sky-50 text-sky-700 border-sky-200'
       emit('task-started')
     }
   } catch (e) {
     message.value = e.message
-    messageClass.value = 'bg-rose-500/10 text-rose-300 border-rose-500/30'
+    messageClass.value = 'bg-rose-50 text-rose-700 border-rose-200'
+  } finally {
+    executingActionKey.value = ''
   }
   setTimeout(() => { message.value = '' }, 8000)
 }

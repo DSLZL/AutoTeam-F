@@ -82,24 +82,39 @@ def _is_main_account_email(email):
     return bool(_normalized_email(email)) and _normalized_email(email) == _normalized_email(get_admin_email())
 
 
+def is_account_disabled(acc: dict | None) -> bool:
+    """Return whether an account is locally disabled for automation flows."""
+    return bool((acc or {}).get("disabled", False))
+
+
+def _normalize_account(acc: dict) -> dict:
+    normalized = dict(acc or {})
+    normalized["disabled"] = bool(normalized.get("disabled", False))
+    return normalized
+
+
 def load_accounts():
     """加载账号列表"""
     if ACCOUNTS_FILE.exists():
         text = read_text(ACCOUNTS_FILE).strip()
         if text:
-            return json.loads(text)
+            data = json.loads(text)
+            if isinstance(data, list):
+                return [_normalize_account(acc) for acc in data if isinstance(acc, dict)]
     return []
 
 
 def save_accounts(accounts):
     """保存账号列表"""
-    write_text(ACCOUNTS_FILE, json.dumps(accounts, indent=2, ensure_ascii=False))
+    normalized = [_normalize_account(acc) for acc in accounts if isinstance(acc, dict)]
+    write_text(ACCOUNTS_FILE, json.dumps(normalized, indent=2, ensure_ascii=False))
 
 
 def find_account(accounts, email):
     """按邮箱查找账号"""
+    target = _normalized_email(email)
     for acc in accounts:
-        if acc["email"] == email:
+        if _normalized_email(acc.get("email")) == target:
             return acc
     return None
 
@@ -146,6 +161,7 @@ def add_account(email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNO
                 "quota_exhausted_at": None,  # 额度用完的时间
                 "quota_resets_at": None,  # 额度恢复时间
                 "last_quota_check_at": None,  # 最近一次 wham/usage 探测时间戳,用于 standby 探测去重
+                "disabled": False,  # 本地禁用:保留记录和 auth_file,但自动化巡检/轮转/同步跳过
                 # Round 11 V7 — 双失效探测(access_token + refresh_token 同时被 server-side invalidate):
                 # 主循环周期性调 is_token_pair_invalidated,命中后落该字段供事后排查 / UI 展示。
                 "last_token_pair_invalidated_at": None,
@@ -220,7 +236,13 @@ def delete_account(email):
 
 def get_active_accounts():
     """获取所有活跃账号"""
-    return [a for a in load_accounts() if a["status"] == STATUS_ACTIVE and not _is_main_account_email(a.get("email"))]
+    return [
+        a
+        for a in load_accounts()
+        if a["status"] == STATUS_ACTIVE
+        and not _is_main_account_email(a.get("email"))
+        and not is_account_disabled(a)
+    ]
 
 
 def get_personal_accounts():
@@ -235,6 +257,8 @@ def get_standby_accounts():
     standby = []
     for a in accounts:
         if _is_main_account_email(a.get("email")):
+            continue
+        if is_account_disabled(a):
             continue
         if a["status"] == STATUS_STANDBY:
             resets_at = a.get("quota_resets_at")
@@ -302,6 +326,7 @@ __all__ = [
     "get_next_reusable_account",
     "get_personal_accounts",
     "get_standby_accounts",
+    "is_account_disabled",
     "is_supported_plan",
     "load_accounts",
     "normalize_plan_type",

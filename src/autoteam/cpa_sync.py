@@ -11,7 +11,7 @@ from pathlib import Path
 import requests
 
 from autoteam.auth_storage import AUTH_DIR, ensure_auth_dir, ensure_auth_file_permissions
-from autoteam.config import CPA_KEY, CPA_URL
+from autoteam.config import AUTO_CHECK_TARGET_SEATS, CPA_KEY, CPA_URL
 from autoteam.textio import write_text
 
 logger = logging.getLogger(__name__)
@@ -207,6 +207,52 @@ def _refresh_account_proxy_url_for_upload(acc: dict, path: Path) -> None:
             logger.error("[CPA] IPv6 proxy_url 为必需但刷新失败: %s (%s)", email, exc)
             raise
         logger.warning("[CPA] IPv6 proxy_url 刷新失败，继续上传原凭证: %s (%s)", email, exc)
+
+
+def _active_auth_publish_decision(acc: dict, path: Path) -> str:
+    """Return publish/delete_remote/keep_remote for a local active Codex auth file."""
+    if not path.exists():
+        return "delete_remote"
+
+    try:
+        auth_data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("[CPA] 跳过无法读取的 active 凭证 %s: %s", path.name, exc)
+        return "delete_remote"
+
+    access_token = auth_data.get("access_token")
+    if not access_token:
+        logger.warning("[CPA] 跳过缺少 access_token 的 active 凭证: %s", path.name)
+        return "delete_remote"
+
+    try:
+        from autoteam.codex_auth import check_codex_quota
+
+        quota_status, _info = check_codex_quota(access_token, timeout=8)
+    except Exception as exc:
+        logger.warning("[CPA] active 凭证实时验证异常，保留远端副本等待下轮: %s (%s)", path.name, exc)
+        return "keep_remote"
+
+    if quota_status == "network_error":
+        logger.warning("[CPA] active 凭证实时验证网络异常，保留远端副本等待下轮: %s", path.name)
+        return "keep_remote"
+
+    if quota_status == "ok":
+        try:
+            from autoteam.ipv6_pool import ipv6_pool
+
+            email = (acc.get("email") or auth_data.get("email") or "").strip().lower()
+            proxy_url = ipv6_pool.ensure(email) or ""
+            if proxy_url and auth_data.get("proxy_url") != proxy_url:
+                auth_data["proxy_url"] = proxy_url
+                write_text(path, json.dumps(auth_data, indent=2, ensure_ascii=False))
+                logger.info("[CPA] 已刷新 active 凭证 proxy_url: %s", email)
+        except Exception as exc:
+            logger.warning("[CPA] active 凭证 IPv6 proxy_url 刷新失败，继续上传原凭证: %s", exc)
+        return "publish"
+
+    logger.warning("[CPA] 跳过实时验证失败的 active 凭证: %s (%s)", path.name, quota_status)
+    return "delete_remote"
 
 
 def _normalized_auth_path(bundle, main=False):
@@ -659,6 +705,34 @@ def sync_to_cpa():
     # CPA 认证文件
     cpa_files = list_cpa_files()
     cpa_names = {f["name"]: f for f in cpa_files if f.get("name")}
+    min_active_for_remote_delete = max(1, int(AUTO_CHECK_TARGET_SEATS) - 1)
+    allow_remote_delete = synced_active >= min_active_for_remote_delete
+
+    try:
+        from autoteam.manager import _is_protected_local_credential_seat
+    except Exception:
+        _is_protected_local_credential_seat = None
+
+    protected_remote_names = set()
+    protected_remote_emails = set()
+    if _is_protected_local_credential_seat is not None:
+        for acc in accounts:
+            if is_account_disabled(acc):
+                continue
+            email = str(acc.get("email") or "").strip().lower()
+            auth_path_value = acc.get("auth_file")
+            if not email:
+                continue
+            try:
+                if _is_protected_local_credential_seat(acc):
+                    protected_remote_emails.add(email)
+                    if auth_path_value:
+                        protected_remote_names.add(Path(auth_path_value).name)
+            except Exception as exc:
+                logger.warning("[CPA] 判断受保护凭证失败，保留远端副本: %s (%s)", email, exc)
+                protected_remote_emails.add(email)
+                if auth_path_value:
+                    protected_remote_names.add(Path(auth_path_value).name)
 
     logger.info(
         "[CPA] 待同步认证文件: %d (Team=%d, Personal=%d), CPA 现有: %d",
@@ -667,6 +741,12 @@ def sync_to_cpa():
         synced_personal,
         len(cpa_files),
     )
+    if not allow_remote_delete:
+        logger.warning(
+            "[CPA] active 凭证不足，跳过本轮远端删除: %d/%d",
+            synced_active,
+            min_active_for_remote_delete,
+        )
 
     # 上传：所有 active + personal 认证文件（覆盖同名文件，确保 token 最新）
     uploaded = 0
@@ -675,47 +755,26 @@ def sync_to_cpa():
         if upload_to_cpa(path):
             uploaded += 1
 
-    # 删除：CPA 中有但不在同步列表的（仅限本地管理的账号 — 避免误删主号或 CPA 手动文件）
-    # 注意：personal 号已计入 files_to_sync，这里不会被删掉；只有状态变成 STANDBY/EXHAUSTED 等才会清理
-    #
-    # Bug 4B 防御:删 CPA 文件之前再加一道闸 —— 若该 email 在本地 accounts.json 仍持有
-    # **同名** auth_file(物理文件存在),说明本地仍认为这份 token 有用,只是 status 暂时
-    # 不在 active/personal(可能是母号切换瞬间 sync_account_states 错刷成 standby、或者
-    # exhausted 待 rotate 处置)。这种情况下删 CPA 文件等于把"还能用的实物 token"丢掉,
-    # 即便事后状态修回来,CPA 端也得等下一次 sync_to_cpa 重新上传(且若 auth_file 期间
-    # 被刷 token 失败,这份就永久丢失)。
-    # 因此守卫规则:本地 auth_file 路径存在 + 文件名完全等于 CPA 端 name → 跳过删除,
-    # 留 WARN log 让用户知道。让删除只在"本地真的没这份文件了/换名字了"时才发生。
-    local_auth_by_email = {}
-    for acc in accounts:
-        email_l = (acc.get("email") or "").lower()
-        auth_path_str = acc.get("auth_file")
-        if not email_l or not auth_path_str:
-            continue
-        try:
-            ap = Path(auth_path_str)
-        except Exception:
-            continue
-        local_auth_by_email[email_l] = ap
-
     deleted = 0
+    skipped_remote_delete = 0
     skipped_protected = 0
     for name, cpa_file in cpa_names.items():
         email = cpa_file.get("email", "").lower()
         if email in local_emails and name not in files_to_sync:
-            local_path = local_auth_by_email.get(email)
-            if local_path is not None and local_path.exists() and local_path.name == name:
-                logger.warning(
-                    "[CPA] 跳过删除 %s — 本地仍持有同名 auth_file 物理文件,等下一轮状态稳定后再处理",
-                    name,
-                )
+            if name in protected_remote_names or email in protected_remote_emails:
+                logger.info("[CPA] 保留受保护本地凭证远端副本: %s (%s)", name, email)
                 skipped_protected += 1
+                continue
+            if not allow_remote_delete:
+                skipped_remote_delete += 1
                 continue
             logger.info("[CPA] 删除非 active/personal 文件: %s (%s)", name, email)
             if delete_from_cpa(name):
                 deleted += 1
     if skipped_protected:
         logger.info("[CPA] 守卫保留 %d 个 CPA 文件(本地仍持有,避免误删 token)", skipped_protected)
+    if skipped_remote_delete:
+        logger.warning("[CPA] 本轮因 active 凭证不足保留远端非 active 文件: %d", skipped_remote_delete)
 
     if disabled_skipped:
         logger.info("[CPA] 跳过 %d 个本地禁用账号", disabled_skipped)
@@ -741,7 +800,11 @@ def sync_to_cpa():
         "disabled_skipped": disabled_skipped,
         "local_duplicates_deleted": local_duplicates_deleted,
         "delete_guard": {
+            "allow_remote_delete": allow_remote_delete,
+            "min_active_for_remote_delete": min_active_for_remote_delete,
+            "skipped_remote_delete": skipped_remote_delete,
             "skipped_protected": skipped_protected,
+            "skipped_protected_delete": skipped_protected,
         },
     }
 

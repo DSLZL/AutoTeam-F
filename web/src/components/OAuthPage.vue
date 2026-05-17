@@ -1,18 +1,18 @@
 <template>
   <div class="mt-6 space-y-6">
-    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+    <div class="glass rounded-lg p-4">
       <div class="flex items-center justify-between gap-4 mb-4">
         <div>
-          <h2 class="text-lg font-semibold text-white">OAuth 登录</h2>
-          <p class="text-sm text-gray-400 mt-1">
+          <h2 class="text-lg font-semibold text-ink-950">OAuth 登录</h2>
+          <p class="text-sm text-ink-500 mt-1">
             参考 CLIProxyAPI 的手动 OAuth 思路：系统先生成认证链接，你在浏览器中手动完成登录，最后把回调 URL 粘贴回来完成认证。
           </p>
         </div>
         <span
           class="min-w-[72px] px-3 py-1.5 rounded-full text-xs text-center whitespace-nowrap border"
           :class="manualAccountBusy
-            ? 'bg-yellow-500/10 text-yellow-300 border-yellow-500/20'
-            : 'bg-gray-800 text-gray-400 border-gray-700'"
+            ? 'bg-amber-50 text-amber-800 border-amber-200'
+            : 'bg-ink-50 text-ink-600 border-hairline'"
         >
           {{ manualAccountBusy ? '进行中' : '空闲' }}
         </span>
@@ -24,14 +24,14 @@
 
       <div
         v-if="manualAccountStatus?.status === 'completed' && manualAccountStatus?.account"
-        class="mb-4 px-4 py-3 rounded-lg text-sm border bg-green-500/10 text-green-400 border-green-500/20"
+        class="mb-4 px-4 py-3 rounded-lg text-sm border bg-emerald-50 text-emerald-700 border-emerald-200"
       >
         {{ manualAccountStatus.message || `已添加账号 ${manualAccountStatus.account.email}` }}
       </div>
 
       <div
         v-else-if="manualAccountStatus?.status === 'error' && manualAccountStatus?.error"
-        class="mb-4 px-4 py-3 rounded-lg text-sm border bg-red-500/10 text-red-400 border-red-500/20"
+        class="mb-4 px-4 py-3 rounded-lg text-sm border bg-rose-50 text-rose-700 border-rose-200"
       >
         {{ manualAccountStatus.error }}
       </div>
@@ -40,22 +40,22 @@
         <button
           @click="startManualAccount"
           :disabled="manualSubmitting"
-          class="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 text-white text-sm rounded-lg transition disabled:opacity-50"
+          class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-on-accent text-sm rounded-lg transition disabled:opacity-50 focus-ring"
         >
           {{ manualSubmitting ? '生成中...' : '生成 OAuth 链接' }}
         </button>
       </div>
 
       <div v-else class="space-y-4">
-        <div class="text-sm text-gray-300">
+        <div class="text-sm text-ink-700">
           已生成 OAuth 链接。若当前机器可访问 <span class="font-mono">localhost:1455</span>，系统会自动接收回调；否则请手动粘贴最终回调 URL。
         </div>
 
         <div
           class="px-4 py-3 rounded-lg text-sm border"
           :class="manualAccountStatus?.auto_callback_available
-            ? 'bg-blue-500/10 text-blue-300 border-blue-500/20'
-            : 'bg-amber-500/10 text-amber-300 border-amber-500/20'"
+            ? 'bg-blue-50 text-blue-700 border-blue-200'
+            : 'bg-amber-50 text-amber-800 border-amber-200'"
         >
           {{
             manualAccountStatus?.auto_callback_available
@@ -65,8 +65,8 @@
         </div>
 
         <div class="space-y-2">
-          <div class="text-xs text-gray-500">OAuth 链接</div>
-          <div class="p-3 bg-gray-800 border border-gray-700 rounded-lg text-xs font-mono break-all text-gray-200">
+          <div class="text-xs text-ink-500">OAuth 链接</div>
+          <div class="p-3 bg-ink-50 border border-hairline rounded-lg text-xs font-mono break-all text-ink-700">
             {{ manualAccountStatus?.auth_url }}
           </div>
         </div>
@@ -76,7 +76,7 @@
             :href="manualAccountStatus?.auth_url"
             target="_blank"
             rel="noopener noreferrer"
-            class="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 text-white text-sm rounded-lg transition"
+            class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-on-accent text-sm rounded-lg transition focus-ring"
           >
             打开 OAuth 链接
           </a>
@@ -84,7 +84,7 @@
 
         <div
           v-if="manualAccountStatus?.callback_received"
-          class="text-xs text-emerald-300"
+          class="text-xs text-emerald-700"
         >
           已收到{{ manualAccountStatus?.callback_source === 'auto' ? '自动' : '手动' }}回调，刷新轮询中…
         </div>
@@ -95,18 +95,18 @@
             type="text"
             placeholder="粘贴回调 URL，例如 http://localhost:1455/auth/callback?code=...&state=..."
             :disabled="manualSubmitting"
-            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:border-blue-500"
+            class="w-full px-3 py-2 bg-surface border border-hairline rounded-lg text-sm text-ink-950 focus-ring"
           />
           <button
             @click="submitManualCallback"
             :disabled="manualSubmitting || !manualCallbackUrl"
-            class="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 text-white text-sm rounded-lg transition disabled:opacity-50"
+            class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-on-accent text-sm rounded-lg transition disabled:opacity-50 focus-ring"
           >
             {{ manualSubmitting ? '提交中...' : '提交回调 URL' }}
           </button>
         </div>
 
-        <div v-if="manualSubmitting && manualSubmittingHint" class="text-xs text-emerald-300">
+        <div v-if="manualSubmitting && manualSubmittingHint" class="text-xs text-emerald-700">
           {{ manualSubmittingHint }}
         </div>
 
@@ -114,7 +114,7 @@
           <button
             @click="cancelManualAccount"
             :disabled="manualSubmitting"
-            class="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm text-gray-200 rounded-lg border border-gray-700 transition disabled:opacity-50"
+            class="px-4 py-2 bg-surface hover:bg-ink-100 text-sm text-ink-700 rounded-lg border border-hairline transition disabled:opacity-50 focus-ring"
           >
             取消 OAuth 登录
           </button>
@@ -159,8 +159,8 @@ watch(
 function setMessage(text, type = 'success') {
   message.value = text
   messageClass.value = type === 'success'
-    ? 'bg-green-500/10 text-green-400 border-green-500/20'
-    : 'bg-red-500/10 text-red-400 border-red-500/20'
+    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+    : 'bg-rose-50 text-rose-700 border-rose-200'
   window.clearTimeout(setMessage._timer)
   setMessage._timer = window.setTimeout(() => {
     message.value = ''

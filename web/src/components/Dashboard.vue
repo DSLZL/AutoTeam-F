@@ -14,12 +14,10 @@
       :min-grace-until="minGraceUntil" />
 
     <!-- 状态分布卡片(色彩区分明显) -->
-    <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-3">
+    <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
       <div v-for="card in cards" :key="card.label"
-        class="glass-soft rounded-xl p-3.5 lift-hover relative overflow-hidden">
-        <div class="absolute top-0 right-0 w-16 h-16 rounded-full opacity-20 blur-xl pointer-events-none"
-          :style="{ background: card.glow }"></div>
-        <div class="text-[10px] uppercase tracking-widest text-gray-500 font-semibold flex items-center gap-1.5">
+        class="glass-soft rounded-lg p-3.5 lift-hover relative overflow-hidden">
+        <div class="text-[10px] uppercase tracking-widest text-ink-500 font-semibold flex items-center gap-1.5">
           <span class="w-1 h-1 rounded-full" :style="{ background: card.dot }"></span>
           {{ card.label }}
         </div>
@@ -28,18 +26,30 @@
     </div>
 
     <!-- 账号表格 -->
-    <div class="glass rounded-2xl overflow-hidden">
-      <div class="px-5 py-4 border-b border-white/[0.04] flex items-center justify-between gap-3 flex-wrap">
+    <div class="glass rounded-lg overflow-hidden">
+      <div class="px-5 py-4 border-b border-hairline flex items-center justify-between gap-3 flex-wrap">
         <div>
-          <h2 class="text-base font-bold text-white tracking-tight">账号列表</h2>
-          <p class="text-[11px] text-gray-500 mt-0.5">{{ status.accounts?.length || 0 }} 个账号 · 实时配额来自 quota_cache</p>
+          <h2 class="text-base font-bold text-ink-950 tracking-tight">账号列表</h2>
+          <p class="text-[11px] text-ink-500 mt-0.5">
+            {{ totalAccounts }} 个账号 · 每页 {{ ACCOUNT_PAGE_SIZE }} 条 · 实时配额来自 quota_cache
+          </p>
         </div>
         <div class="flex items-center gap-2">
+          <AtButton v-if="selectedDisableEmails.length"
+            variant="secondary" size="sm" :loading="bulkToggling" :disabled="actionDisabled"
+            @click="bulkDisableSelected">
+            禁用自动化 ({{ selectedDisableEmails.length }})
+          </AtButton>
+          <AtButton v-if="selectedEnableEmails.length"
+            variant="primary" size="sm" :loading="bulkToggling" :disabled="actionDisabled"
+            @click="bulkEnableSelected">
+            启用自动化 ({{ selectedEnableEmails.length }})
+          </AtButton>
           <AtButton v-if="selectedEmails.length"
             variant="danger" size="sm" :loading="batchDeleting" :disabled="actionDisabled"
             confirm @click="batchDelete">
             <template #icon>
-              <svg viewBox="0 0 16 16" class="w-3.5 h-3.5"><path fill="currentColor" d="M5 6v6h1V6H5zm2 0v6h1V6H7zm2 0v6h1V6H9zm2 0v6h1V6h-1zM4 4l1-2h6l1 2h2v1H2V4h2zm1 1v9a2 2 0 002 2h2a2 2 0 002-2V5H5z"/></svg>
+              <Trash2 class="w-3.5 h-3.5" :stroke-width="2" />
             </template>
             {{ batchDeleting ? `批量删除 ${batchProgress}` : `批量删除 (${selectedEmails.length})` }}
           </AtButton>
@@ -48,25 +58,50 @@
           </AtButton>
           <AtButton variant="secondary" size="sm" :loading="syncing" @click="syncAccounts">
             <template #icon>
-              <svg viewBox="0 0 16 16" class="w-3.5 h-3.5"><path fill="none" stroke="currentColor" stroke-width="1.6" d="M3 8a5 5 0 018.5-3.5L13 3M13 8a5 5 0 01-8.5 3.5L3 13M13 3v3h-3M3 13v-3h3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <RefreshCw class="w-3.5 h-3.5" :stroke-width="2" />
             </template>
             {{ syncing ? '同步中…' : '同步账号' }}
           </AtButton>
         </div>
       </div>
 
-      <div v-if="message" class="mx-5 mt-4 px-4 py-2.5 rounded-xl text-sm border animate-rise" :class="messageClass">
+      <div v-if="message" class="mx-5 mt-4 px-4 py-2.5 rounded-lg text-sm border animate-rise" :class="messageClass">
         {{ message }}
       </div>
       <div v-if="!adminReady"
-        class="mx-5 mt-4 px-4 py-2.5 rounded-xl text-sm border bg-amber-500/10 text-amber-300 border-amber-500/30">
+        class="mx-5 mt-4 px-4 py-2.5 rounded-lg text-sm border bg-amber-50 text-amber-800 border-amber-200">
         请先在「设置」页完成管理员登录后,才能操作账号。
+      </div>
+      <div v-if="hiddenAccountCount"
+        class="mx-5 mt-4 px-4 py-2.5 rounded-lg text-sm border bg-sky-50 text-sky-800 border-sky-200">
+        当前仅渲染第 {{ accountPageStart + 1 }}-{{ accountPageEnd }} 个账号，另有 {{ hiddenAccountCount }} 个账号在其它页，以控制页面资源占用。
+      </div>
+      <div v-if="totalAccountPages > 1"
+        class="mx-5 mt-4 px-3 py-2 rounded-lg border border-hairline bg-ink-50 flex items-center justify-between gap-3 flex-wrap">
+        <div class="text-xs text-ink-600">
+          显示 {{ accountPageStart + 1 }}-{{ accountPageEnd }} / {{ totalAccounts }}
+        </div>
+        <div class="flex items-center gap-2">
+          <AtButton variant="ghost" size="sm" :disabled="accountPage <= 1" @click="goAccountPage(accountPage - 1)">
+            <template #icon>
+              <ChevronLeft class="w-3.5 h-3.5" :stroke-width="2" />
+            </template>
+            上一页
+          </AtButton>
+          <span class="text-xs text-ink-600 tabular">第 {{ accountPage }} / {{ totalAccountPages }} 页</span>
+          <AtButton variant="ghost" size="sm" :disabled="accountPage >= totalAccountPages" @click="goAccountPage(accountPage + 1)">
+            <template #icon>
+              <ChevronRight class="w-3.5 h-3.5" :stroke-width="2" />
+            </template>
+            下一页
+          </AtButton>
+        </div>
       </div>
 
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
           <thead>
-            <tr class="text-gray-500 text-left border-b border-white/[0.04] text-[10px] uppercase tracking-widest">
+            <tr class="text-ink-500 text-left border-b border-hairline text-[10px] uppercase tracking-widest">
               <th class="px-3 py-3 font-semibold w-8">
                 <input
                   type="checkbox"
@@ -75,7 +110,7 @@
                   @change="toggleSelectAll"
                   :disabled="!selectableEmails.length"
                   class="accent-indigo-500 cursor-pointer w-3.5 h-3.5"
-                  title="全选/取消全选(主号除外)" />
+                  title="全选/取消全选本页账号(主号除外)" />
               </th>
               <th class="px-3 py-3 font-semibold">#</th>
               <th class="px-4 py-3 font-semibold">邮箱</th>
@@ -89,9 +124,9 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(acc, i) in status.accounts" :key="acc.email"
-              class="row-hoverable border-b border-white/[0.03] hover:bg-white/[0.02] group"
-              :class="isSelected(acc.email) ? 'bg-indigo-500/[0.05]' : ''">
+            <tr v-for="(acc, i) in visibleAccounts" :key="acc.email"
+              class="row-hoverable border-b border-hairline hover:bg-ink-50 group"
+              :class="[isSelected(acc.email) ? 'bg-indigo-50' : '', acc.disabled ? 'opacity-75' : '']">
               <td class="px-3 py-3.5">
                 <input
                   v-if="!acc.is_main_account"
@@ -100,15 +135,15 @@
                   @change="toggleSelect(acc.email)"
                   class="accent-indigo-500 cursor-pointer w-3.5 h-3.5" />
               </td>
-              <td class="px-3 py-3.5 text-gray-600 font-mono text-xs">{{ String(i + 1).padStart(2, '0') }}</td>
+              <td class="px-3 py-3.5 text-ink-400 font-mono text-xs">{{ String(accountPageStart + i + 1).padStart(2, '0') }}</td>
               <td class="px-4 py-3.5">
                 <div class="flex items-center gap-2">
                   <span v-if="acc.is_main_account"
                     class="text-[9px] uppercase tracking-widest font-bold px-1.5 py-0.5 rounded
-                           bg-gradient-to-br from-indigo-500/30 to-violet-500/30 text-indigo-100 border border-indigo-400/30">
+                           bg-indigo-50 text-indigo-700 border border-indigo-200">
                     Master
                   </span>
-                  <span class="font-mono text-[12px] text-gray-100">{{ acc.email }}</span>
+                  <span class="font-mono text-[12px] text-ink-900">{{ acc.email }}</span>
                 </div>
               </td>
               <td class="px-4 py-3.5">
@@ -123,13 +158,13 @@
               <td class="px-4 py-3.5 text-right font-mono tabular text-[12px]" :class="pctColor(quota(acc, 'weekly'))">
                 {{ quotaPct(acc, 'weekly') }}
               </td>
-              <td class="px-4 py-3.5 text-gray-500 font-mono text-[11px]">{{ quotaReset(acc, 'primary') }}</td>
-              <td class="px-4 py-3.5 text-gray-500 font-mono text-[11px]">{{ quotaReset(acc, 'weekly') }}</td>
+              <td class="px-4 py-3.5 text-ink-500 font-mono text-[11px]">{{ quotaReset(acc, 'primary') }}</td>
+              <td class="px-4 py-3.5 text-ink-500 font-mono text-[11px]">{{ quotaReset(acc, 'weekly') }}</td>
               <td class="px-4 py-3.5 text-right">
                 <div class="flex items-center justify-end gap-1.5 flex-wrap">
                   <span v-if="acc.status === 'personal' && !acc.auth_file"
                     class="inline-block px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wide
-                           bg-amber-500/10 text-amber-300 border border-amber-500/30"
+                           bg-amber-50 text-amber-800 border border-amber-200"
                     title="未拿到 Codex auth_file,请点击补登录">
                     缺认证
                   </span>
@@ -149,21 +184,28 @@
                     title="立即调 cheap_codex_smoke + check_codex_quota,绕过 30min 节流">
                     立即探活
                   </AtButton>
-                  <AtButton v-if="!acc.is_main_account && acc.status === 'active'"
+                  <AtButton v-if="!acc.is_main_account && !acc.disabled && acc.raw_status === 'active'"
                     variant="secondary" size="sm"
                     :loading="actionEmail === acc.email && actionType === 'kick'"
                     :disabled="actionDisabled || (actionEmail === acc.email && actionType !== 'kick')"
                     @click="kickAccount(acc.email)">
                     移出
                   </AtButton>
-                  <AtButton v-if="acc.status === 'active' || acc.status === 'personal' || acc.is_main_account"
+                  <AtButton v-if="acc.raw_status === 'active' || acc.raw_status === 'personal' || acc.is_main_account"
                     variant="ghost" size="sm"
                     :disabled="actionEmail === acc.email"
                     @click="exportCodexAuth(acc.email)">
                     <template #icon>
-                      <svg viewBox="0 0 16 16" class="w-3.5 h-3.5"><path fill="currentColor" d="M8 1l3 3h-2v5H7V4H5l3-3zM3 12v-2h1v2h8v-2h1v2a1 1 0 01-1 1H4a1 1 0 01-1-1z"/></svg>
+                      <Download class="w-3.5 h-3.5" :stroke-width="2" />
                     </template>
                     导出
+                  </AtButton>
+                  <AtButton v-if="!acc.is_main_account"
+                    :variant="acc.disabled ? 'primary' : 'secondary'" size="sm"
+                    :loading="actionEmail === acc.email && actionType === (acc.disabled ? 'enable' : 'disable')"
+                    :disabled="actionDisabled || (actionEmail === acc.email && !['enable', 'disable'].includes(actionType))"
+                    @click="toggleAccountDisabled(acc)">
+                    {{ acc.disabled ? '启用' : '禁用' }}
                   </AtButton>
                   <AtButton v-if="!acc.is_main_account"
                     variant="danger" size="sm" confirm
@@ -180,11 +222,11 @@
       </div>
 
       <!-- 注册失败明细 -->
-      <div class="border-t border-white/[0.04] p-5 bg-black/10">
+      <div class="border-t border-hairline p-5 bg-ink-50">
         <div class="flex items-center justify-between mb-3">
           <div>
-            <h2 class="text-sm font-bold text-white tracking-tight">注册失败明细</h2>
-            <div class="text-[11px] text-gray-500 mt-0.5">未能入池的注册尝试 (add-phone / duplicate / OAuth 失败 等)</div>
+            <h2 class="text-sm font-bold text-ink-950 tracking-tight">注册失败明细</h2>
+            <div class="text-[11px] text-ink-500 mt-0.5">未能入池的注册尝试 (add-phone / duplicate / OAuth 失败 等)</div>
           </div>
           <AtButton variant="ghost" size="sm" :loading="failuresLoading" @click="loadFailures">
             刷新
@@ -192,13 +234,17 @@
         </div>
         <div v-if="failuresCounts && Object.keys(failuresCounts).length" class="flex flex-wrap gap-1.5 mb-3 text-[11px]">
           <span v-for="(cnt, cat) in failuresCounts" :key="cat"
-            class="px-2 py-0.5 rounded-md border bg-white/[0.02] border-white/[0.06] text-gray-300">
-            {{ cat }}: <span class="text-rose-300 font-mono ml-0.5 tabular">{{ cnt }}</span>
+            class="px-2 py-0.5 rounded-md border bg-surface border-hairline text-ink-700">
+            {{ cat }}: <span class="text-rose-700 font-mono ml-0.5 tabular">{{ cnt }}</span>
           </span>
         </div>
-        <div class="overflow-x-auto rounded-xl border border-white/[0.04]">
+        <div class="overflow-x-auto rounded-lg border border-hairline bg-surface">
+          <div v-if="failuresUnavailable"
+            class="px-3 py-3 text-xs text-amber-800 bg-amber-50 border-b border-amber-200">
+            {{ failuresUnavailable }}
+          </div>
           <table class="w-full text-sm">
-            <thead class="text-[10px] uppercase tracking-widest text-gray-500 border-b border-white/[0.04] bg-white/[0.01]">
+            <thead class="text-[10px] uppercase tracking-widest text-ink-500 border-b border-hairline bg-ink-50">
               <tr>
                 <th class="text-left px-3 py-2 font-semibold">时间</th>
                 <th class="text-left px-3 py-2 font-semibold">邮箱</th>
@@ -207,19 +253,19 @@
                 <th class="text-left px-3 py-2 font-semibold">附加</th>
               </tr>
             </thead>
-            <tbody class="divide-y divide-white/[0.03] text-xs">
+            <tbody class="divide-y divide-hairline text-xs">
               <tr v-if="!failuresItems.length">
-                <td class="px-3 py-4 text-gray-600 italic" colspan="5">暂无失败记录</td>
+                <td class="px-3 py-4 text-ink-400 italic" colspan="5">暂无失败记录</td>
               </tr>
-              <tr v-for="(f, idx) in failuresItems" :key="idx" class="hover:bg-white/[0.02]">
-                <td class="px-3 py-2 text-gray-500 font-mono">{{ fmtTs(f.timestamp) }}</td>
-                <td class="px-3 py-2 text-gray-300 font-mono">{{ f.email || '-' }}</td>
+              <tr v-for="(f, idx) in failuresItems" :key="idx" class="hover:bg-ink-50">
+                <td class="px-3 py-2 text-ink-500 font-mono">{{ fmtTs(f.timestamp) }}</td>
+                <td class="px-3 py-2 text-ink-700 font-mono">{{ f.email || '-' }}</td>
                 <td class="px-3 py-2">
                   <span class="px-1.5 py-0.5 rounded-md border text-[10px] font-semibold uppercase tracking-wide"
                     :class="failureCategoryClass(f.category)">{{ f.category }}</span>
                 </td>
-                <td class="px-3 py-2 text-gray-400">{{ f.reason }}</td>
-                <td class="px-3 py-2 text-gray-600 font-mono text-[10px]">{{ fmtFailureExtra(f) }}</td>
+                <td class="px-3 py-2 text-ink-600">{{ f.reason }}</td>
+                <td class="px-3 py-2 text-ink-400 font-mono text-[10px]">{{ fmtFailureExtra(f) }}</td>
               </tr>
             </tbody>
           </table>
@@ -228,36 +274,38 @@
 
       <!-- Codex 认证导出弹窗 -->
       <div v-if="exportData"
-        class="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-rise"
+        class="fixed inset-0 bg-ink-600/20 z-50 flex items-center justify-center p-4 animate-rise"
         @click.self="exportData = null">
-        <div class="glass rounded-2xl w-full max-w-2xl max-h-[80vh] flex flex-col">
-          <div class="px-5 py-4 border-b border-white/[0.04] flex items-center justify-between">
-            <h3 class="text-white font-bold tracking-tight">Codex CLI 认证文件</h3>
-            <button @click="exportData = null" class="text-gray-400 hover:text-white text-2xl leading-none transition">&times;</button>
+        <div class="glass rounded-lg w-full max-w-2xl max-h-[80vh] flex flex-col">
+          <div class="px-5 py-4 border-b border-hairline flex items-center justify-between">
+            <h3 class="text-ink-950 font-bold tracking-tight">Codex CLI 认证文件</h3>
+            <button @click="exportData = null" class="text-ink-500 hover:text-ink-950 transition focus-ring rounded-lg p-1">
+              <X class="w-4 h-4" :stroke-width="2" />
+            </button>
           </div>
           <div class="p-5 space-y-3 overflow-y-auto flex-1">
-            <div class="px-3 py-2.5 bg-amber-500/10 border border-amber-500/30 rounded-xl text-sm text-amber-200 space-y-2">
+            <div class="px-3 py-2.5 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800 space-y-2">
               <div class="font-semibold">使用步骤:</div>
-              <ol class="list-decimal list-inside space-y-1 text-xs text-amber-300/90">
+              <ol class="list-decimal list-inside space-y-1 text-xs text-amber-700">
                 <li>退出当前 Codex CLI 会话</li>
-                <li>删除旧文件:<code class="bg-black/40 px-1 rounded">rm ~/.codex/auth.json</code></li>
-                <li>将下方内容保存到 <code class="bg-black/40 px-1 rounded">~/.codex/auth.json</code>(Windows: <code class="bg-black/40 px-1 rounded">%APPDATA%\codex\auth.json</code>)</li>
+                <li>删除旧文件:<code class="bg-amber-50 border border-amber-200 px-1 rounded">rm ~/.codex/auth.json</code></li>
+                <li>将下方内容保存到 <code class="bg-amber-50 border border-amber-200 px-1 rounded">~/.codex/auth.json</code>(Windows: <code class="bg-amber-50 border border-amber-200 px-1 rounded">%APPDATA%\codex\auth.json</code>)</li>
                 <li>重新启动 Codex CLI</li>
               </ol>
-              <div class="text-xs text-amber-300/60">导出后 Codex CLI 直连 OpenAI,不走 CPA 代理,响应更快。</div>
+              <div class="text-xs text-amber-700">导出后 Codex CLI 直连 OpenAI,不走 CPA 代理,响应更快。</div>
             </div>
             <div class="relative">
-              <pre class="bg-black/60 border border-white/[0.06] rounded-xl p-4 text-xs font-mono text-gray-300 overflow-x-auto whitespace-pre">{{ exportJson }}</pre>
+              <pre class="bg-ink-50 border border-hairline rounded-lg p-4 text-xs font-mono text-ink-800 overflow-x-auto whitespace-pre">{{ exportJson }}</pre>
               <AtButton :variant="copied ? 'primary' : 'secondary'" size="sm"
                 class="absolute top-2 right-2" @click="copyExport">
                 {{ copied ? '已复制' : '复制' }}
               </AtButton>
             </div>
           </div>
-          <div class="px-5 py-4 border-t border-white/[0.04] flex justify-end gap-2">
+          <div class="px-5 py-4 border-t border-hairline flex justify-end gap-2">
             <AtButton variant="primary" @click="downloadExport">
               <template #icon>
-                <svg viewBox="0 0 16 16" class="w-3.5 h-3.5"><path fill="currentColor" d="M8 11l-4-4h2.5V2h3v5H12L8 11zM3 13h10v1H3z"/></svg>
+                <Download class="w-3.5 h-3.5" :stroke-width="2" />
               </template>
               下载 auth.json
             </AtButton>
@@ -271,20 +319,21 @@
   <!-- Loading skeleton -->
   <div v-else-if="loading" class="space-y-4">
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
-      <div v-for="i in 4" :key="i" class="glass-soft rounded-xl p-4 h-20 shimmer-bg"></div>
+      <div v-for="i in 4" :key="i" class="glass-soft rounded-lg p-4 h-20 shimmer-bg"></div>
     </div>
-    <div class="glass-soft rounded-2xl h-64 shimmer-bg"></div>
+    <div class="glass-soft rounded-lg h-64 shimmer-bg"></div>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { api } from '../api.js'
 import StatusBadge from './StatusBadge.vue'
 import UsabilityCell from './UsabilityCell.vue'
 import MasterHealthBanner from './MasterHealthBanner.vue'
 import PoolHealthCard from './PoolHealthCard.vue'
 import AtButton from './AtButton.vue'
+import { ChevronLeft, ChevronRight, Download, RefreshCw, Trash2, X } from 'lucide-vue-next'
 import {
   quotaRemainingPct as _qr,
   quotaPctText,
@@ -301,6 +350,9 @@ const props = defineProps({
   runningTask: Object,
   adminStatus: { type: Object, default: null },
   masterHealth: { type: Object, default: null },
+  registerFailures: { type: Object, default: null },
+  registerFailuresLoading: { type: Boolean, default: false },
+  registerFailuresUnavailable: { type: String, default: '' },
 })
 const emit = defineEmits(['refresh', 'reload-master-health'])
 
@@ -312,28 +364,44 @@ const exportData = ref(null)
 const copied = ref(false)
 const messageClass = ref('')
 const masterHealthBusy = ref(false)
+const accountPage = ref(1)
+const ACCOUNT_PAGE_SIZE = 50
 
 // 批量删除选中态:按邮箱(小写)保存,便于跨刷新复用
 const selectedSet = ref(new Set())
 const batchDeleting = ref(false)
 const batchProgress = ref('')
+const bulkToggling = ref(false)
 
-// 失败日志面板状态
-const failuresItems = ref([])
-const failuresCounts = ref({})
-const failuresLoading = ref(false)
+const failuresItems = computed(() => props.registerFailures?.items || [])
+const failuresCounts = computed(() => props.registerFailures?.counts || {})
+const failuresLoading = computed(() => !!props.registerFailuresLoading)
+const failuresUnavailable = computed(() => props.registerFailuresUnavailable || '')
 
-async function loadFailures() {
-  failuresLoading.value = true
-  try {
-    const r = await api.getRegisterFailures(50)
-    failuresItems.value = r.items || []
-    failuresCounts.value = r.counts || {}
-  } catch (e) {
-    console.error('loadFailures', e)
-  } finally {
-    failuresLoading.value = false
+const accounts = computed(() => props.status?.accounts || [])
+const totalAccounts = computed(() => accounts.value.length)
+const totalAccountPages = computed(() => Math.max(1, Math.ceil(totalAccounts.value / ACCOUNT_PAGE_SIZE)))
+const accountPageStart = computed(() => (accountPage.value - 1) * ACCOUNT_PAGE_SIZE)
+const accountPageEnd = computed(() => Math.min(accountPageStart.value + ACCOUNT_PAGE_SIZE, totalAccounts.value))
+const visibleAccounts = computed(() => accounts.value.slice(accountPageStart.value, accountPageEnd.value))
+const hiddenAccountCount = computed(() => Math.max(0, accounts.value.length - visibleAccounts.value.length))
+
+function goAccountPage(page) {
+  const nextPage = Math.min(Math.max(1, page), totalAccountPages.value)
+  if (nextPage === accountPage.value) return
+  accountPage.value = nextPage
+  clearSelection()
+}
+
+watch(totalAccountPages, pages => {
+  if (accountPage.value > pages) {
+    accountPage.value = pages
+    clearSelection()
   }
+})
+
+function loadFailures() {
+  emit('refresh')
 }
 
 function fmtTs(ts) {
@@ -345,15 +413,15 @@ function fmtTs(ts) {
 
 function failureCategoryClass(cat) {
   const map = {
-    phone_blocked: 'bg-rose-500/10 text-rose-300 border-rose-500/30',
-    duplicate_exhausted: 'bg-orange-500/10 text-orange-300 border-orange-500/30',
-    register_failed: 'bg-amber-500/10 text-amber-300 border-amber-500/30',
-    oauth_failed: 'bg-purple-500/10 text-purple-300 border-purple-500/30',
-    kick_failed: 'bg-yellow-500/10 text-yellow-300 border-yellow-500/30',
-    exception: 'bg-red-500/10 text-red-300 border-red-500/30',
-    master_subscription_degraded: 'bg-orange-500/10 text-orange-300 border-orange-500/30',
+    phone_blocked: 'bg-rose-50 text-rose-700 border-rose-200',
+    duplicate_exhausted: 'bg-orange-50 text-orange-700 border-orange-200',
+    register_failed: 'bg-amber-50 text-amber-700 border-amber-200',
+    oauth_failed: 'bg-sky-50 text-sky-700 border-sky-200',
+    kick_failed: 'bg-yellow-50 text-yellow-700 border-yellow-200',
+    exception: 'bg-red-50 text-red-700 border-red-200',
+    master_subscription_degraded: 'bg-orange-50 text-orange-700 border-orange-200',
   }
-  return map[cat] || 'bg-gray-500/10 text-gray-400 border-gray-500/30'
+  return map[cat] || 'bg-ink-50 text-ink-600 border-hairline'
 }
 
 function fmtFailureExtra(f) {
@@ -365,19 +433,24 @@ function fmtFailureExtra(f) {
   return parts.join(' ') || '-'
 }
 
-onMounted(loadFailures)
-watch(() => props.runningTask, (cur, prev) => {
-  if (prev && !cur) loadFailures()
-})
-
 const adminReady = computed(() => !!props.adminStatus?.configured)
-const actionDisabled = computed(() => !!props.runningTask || !adminReady.value)
+const actionDisabled = computed(() => !!props.runningTask || !adminReady.value || bulkToggling.value)
 
 const selectableEmails = computed(() =>
-  (props.status?.accounts || []).filter(a => !a.is_main_account).map(a => a.email)
+  visibleAccounts.value.filter(a => !a.is_main_account).map(a => a.email)
 )
 const selectedEmails = computed(() =>
   selectableEmails.value.filter(e => selectedSet.value.has(e.toLowerCase()))
+)
+const selectedDisableEmails = computed(() =>
+  visibleAccounts.value
+    .filter(a => !a.is_main_account && !a.disabled && selectedSet.value.has((a.email || '').toLowerCase()))
+    .map(a => a.email)
+)
+const selectedEnableEmails = computed(() =>
+  visibleAccounts.value
+    .filter(a => !a.is_main_account && a.disabled && selectedSet.value.has((a.email || '').toLowerCase()))
+    .map(a => a.email)
 )
 const allSelectableChecked = computed(() =>
   selectableEmails.value.length > 0 && selectedEmails.value.length === selectableEmails.value.length
@@ -405,7 +478,7 @@ function clearSelection() { selectedSet.value = new Set() }
 // Round 9 — 派生 minGraceUntil:从所有 GRACE 子号取最早到期者,banner/PoolHealthCard 共用
 const minGraceUntil = computed(() => {
   let min = null
-  for (const acc of props.status?.accounts || []) {
+  for (const acc of accounts.value) {
     if (acc.status === 'degraded_grace' && typeof acc.grace_until === 'number') {
       if (min === null || acc.grace_until < min) min = acc.grace_until
     }
@@ -416,13 +489,14 @@ const minGraceUntil = computed(() => {
 const cards = computed(() => {
   if (!props.status) return []
   const s = props.status.summary || {}
-  const dg = s.degraded_grace ?? (props.status.accounts || []).filter(a => a.status === 'degraded_grace').length
+  const dg = s.degraded_grace ?? accounts.value.filter(a => a.status === 'degraded_grace').length
   return [
-    { label: 'Active', value: s.active || 0, color: 'text-emerald-300', dot: 'rgb(52, 211, 153)', glow: 'radial-gradient(circle, rgba(52, 211, 153, 0.45), transparent 60%)' },
-    { label: 'Standby', value: s.standby || 0, color: 'text-amber-300', dot: 'rgb(251, 191, 36)', glow: 'radial-gradient(circle, rgba(251, 191, 36, 0.40), transparent 60%)' },
-    { label: 'Grace', value: dg, color: 'text-orange-300', dot: 'rgb(251, 146, 60)', glow: 'radial-gradient(circle, rgba(251, 146, 60, 0.40), transparent 60%)' },
-    { label: 'Personal', value: s.personal || 0, color: 'text-violet-300', dot: 'rgb(167, 139, 250)', glow: 'radial-gradient(circle, rgba(167, 139, 250, 0.40), transparent 60%)' },
-    { label: 'Total', value: s.total || 0, color: 'text-white', dot: 'rgb(99, 102, 241)', glow: 'radial-gradient(circle, rgba(99, 102, 241, 0.45), transparent 60%)' },
+    { label: 'Active', value: s.active || 0, color: 'text-emerald-700', dot: 'rgb(16, 185, 129)' },
+    { label: 'Standby', value: s.standby || 0, color: 'text-amber-700', dot: 'rgb(217, 119, 6)' },
+    { label: 'Grace', value: dg, color: 'text-orange-700', dot: 'rgb(234, 88, 12)' },
+    { label: 'Personal', value: s.personal || 0, color: 'text-sky-700', dot: 'rgb(2, 132, 199)' },
+    { label: 'Disabled', value: s.disabled || 0, color: 'text-stone-700', dot: 'rgb(120, 113, 108)' },
+    { label: 'Total', value: s.total || 0, color: 'text-ink-950', dot: 'rgb(79, 70, 229)' },
   ]
 })
 
@@ -491,6 +565,7 @@ async function syncAccounts() {
 
 function canLogin(acc) {
   if (acc.is_main_account) return false
+  if (acc.disabled) return false
   if (acc.status === 'active') return false
   if (acc.status === 'personal' && acc.auth_file) return false
   if (acc.status === 'degraded_grace') return false // grace 期内仍可用,无需补登录
@@ -500,6 +575,7 @@ function canLogin(acc) {
 // (主号有自己的"立即重测"按钮在 MasterHealthBanner;orphan/pending 无 token 探不动)
 function canProbe(acc) {
   if (acc.is_main_account) return false
+  if (acc.disabled) return false
   if (!acc.auth_file) return false
   if (acc.status === 'pending' || acc.status === 'orphan') return false
   return true
@@ -568,6 +644,30 @@ async function kickAccount(email) {
   }
 }
 
+async function toggleAccountDisabled(acc) {
+  if (actionDisabled.value) return
+  const disabling = !acc.disabled
+  const ok = window.confirm(
+    disabling
+      ? `确认禁用账号 ${acc.email}?\n禁用后会保留本地记录,但自动巡检、轮转和 CPA 同步会跳过该账号。`
+      : `确认启用账号 ${acc.email}?\n启用后该账号会重新参与自动巡检、轮转和 CPA 同步。`
+  )
+  if (!ok) return
+  actionEmail.value = acc.email
+  actionType.value = disabling ? 'disable' : 'enable'
+  try {
+    const result = disabling
+      ? await api.disableAccount(acc.email)
+      : await api.enableAccount(acc.email)
+    toast.success(disabling ? '账号已禁用' : '账号已启用', result.message || acc.email)
+    emit('refresh')
+  } catch (e) {
+    toast.error(disabling ? '禁用失败' : '启用失败', e.message)
+  } finally {
+    actionEmail.value = ''; actionType.value = ''
+  }
+}
+
 async function removeAccount(email) {
   if (actionDisabled.value) return
   // 二次确认已在 AtButton(confirm) 内做了第一次,这里再用 native confirm 提示破坏性操作细节
@@ -582,6 +682,52 @@ async function removeAccount(email) {
     toast.error('删除失败', e.message)
   } finally {
     actionEmail.value = ''; actionType.value = ''
+  }
+}
+
+async function bulkDisableSelected() {
+  if (actionDisabled.value || bulkToggling.value) return
+  const emails = selectedDisableEmails.value
+  if (!emails.length) return
+  const preview = emails.slice(0, 8).join('\n')
+  const more = emails.length > 8 ? `\n…还有 ${emails.length - 8} 个` : ''
+  const ok = window.confirm(
+    `确认批量禁用以下 ${emails.length} 个账号?\n禁用后会保留本地记录,但自动巡检、轮转和 CPA 同步会跳过它们。\n\n${preview}${more}`
+  )
+  if (!ok) return
+  bulkToggling.value = true
+  try {
+    const result = await api.bulkDisableAccounts(emails)
+    toast.success('批量禁用完成', result.message || `已禁用 ${emails.length} 个账号`)
+    clearSelection()
+    emit('refresh')
+  } catch (e) {
+    toast.error('批量禁用失败', e.message)
+  } finally {
+    bulkToggling.value = false
+  }
+}
+
+async function bulkEnableSelected() {
+  if (actionDisabled.value || bulkToggling.value) return
+  const emails = selectedEnableEmails.value
+  if (!emails.length) return
+  const preview = emails.slice(0, 8).join('\n')
+  const more = emails.length > 8 ? `\n…还有 ${emails.length - 8} 个` : ''
+  const ok = window.confirm(
+    `确认批量启用以下 ${emails.length} 个账号?\n启用后它们会重新参与自动巡检、轮转和 CPA 同步。\n\n${preview}${more}`
+  )
+  if (!ok) return
+  bulkToggling.value = true
+  try {
+    const result = await api.bulkEnableAccounts(emails)
+    toast.success('批量启用完成', result.message || `已启用 ${emails.length} 个账号`)
+    clearSelection()
+    emit('refresh')
+  } catch (e) {
+    toast.error('批量启用失败', e.message)
+  } finally {
+    bulkToggling.value = false
   }
 }
 

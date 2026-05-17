@@ -1,30 +1,30 @@
 <template>
   <div>
     <div class="flex items-center justify-between mb-6">
-      <h2 class="text-xl font-bold text-white">Team 成员</h2>
+      <h2 class="text-xl font-bold text-ink-950">Team 成员</h2>
       <button @click="fetchMembers" :disabled="loading"
-        class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-sm rounded-lg border border-gray-700 transition disabled:opacity-50">
+        class="px-3 py-1.5 bg-surface hover:bg-ink-100 text-sm rounded-lg border border-hairline transition disabled:opacity-50 focus-ring text-ink-700">
         {{ loading ? '加载中...' : '刷新' }}
       </button>
     </div>
 
-    <div v-if="error" class="mb-4 px-4 py-3 rounded-lg text-sm bg-red-500/10 text-red-400 border border-red-500/20">
+    <div v-if="error" class="mb-4 px-4 py-3 rounded-lg text-sm bg-rose-50 text-rose-700 border border-rose-200">
       {{ error }}
     </div>
 
     <div v-if="data" class="space-y-4">
       <!-- 统计 -->
       <div class="flex gap-4 text-sm">
-        <span class="px-3 py-1.5 bg-gray-800 rounded-lg text-gray-300">成员: <span class="text-white font-medium">{{ data.total }}</span></span>
-        <span v-if="data.invites > 0" class="px-3 py-1.5 bg-gray-800 rounded-lg text-gray-300">待接受邀请: <span class="text-yellow-400 font-medium">{{ data.invites }}</span></span>
+        <span class="px-3 py-1.5 bg-ink-50 rounded-lg text-ink-600 border border-hairline">成员: <span class="text-ink-950 font-medium">{{ data.total }}</span></span>
+        <span v-if="data.invites > 0" class="px-3 py-1.5 bg-amber-50 rounded-lg text-amber-800 border border-amber-200">待接受邀请: <span class="font-medium">{{ data.invites }}</span></span>
       </div>
 
       <!-- 成员表格 -->
-      <div class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+      <div class="glass rounded-lg overflow-hidden">
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead>
-              <tr class="text-gray-400 text-left border-b border-gray-800">
+              <tr class="text-ink-500 text-left border-b border-hairline">
                 <th class="px-4 py-3 font-medium">#</th>
                 <th class="px-4 py-3 font-medium">邮箱</th>
                 <th class="px-4 py-3 font-medium">角色</th>
@@ -35,27 +35,27 @@
             </thead>
             <tbody>
               <tr v-for="(m, i) in data.members" :key="m.email + m.type"
-                class="border-b border-gray-800/50 hover:bg-gray-800/30 transition">
-                <td class="px-4 py-3 text-gray-500">{{ i + 1 }}</td>
+                class="border-b border-hairline hover:bg-ink-50 transition">
+                <td class="px-4 py-3 text-ink-500">{{ i + 1 }}</td>
                 <td class="px-4 py-3 font-mono text-xs">{{ m.email }}</td>
                 <td class="px-4 py-3">
                   <span class="px-2 py-0.5 rounded text-xs font-medium"
                     :class="{
-                      'bg-purple-500/10 text-purple-400': m.role === 'account-owner',
-                      'bg-blue-500/10 text-blue-400': m.role === 'account-admin',
-                      'bg-gray-500/10 text-gray-300': m.role !== 'account-owner' && m.role !== 'account-admin',
+                      'bg-indigo-50 text-indigo-700': m.role === 'account-owner',
+                      'bg-sky-50 text-sky-700': m.role === 'account-admin',
+                      'bg-ink-50 text-ink-600': m.role !== 'account-owner' && m.role !== 'account-admin',
                     }">
                     {{ m.role || 'member' }}
                   </span>
                 </td>
                 <td class="px-4 py-3">
                   <span class="px-2 py-0.5 rounded text-xs font-medium"
-                    :class="m.type === 'invite' ? 'bg-yellow-500/10 text-yellow-400' : 'bg-green-500/10 text-green-400'">
+                    :class="m.type === 'invite' ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'">
                     {{ m.type === 'invite' ? '待接受' : '已加入' }}
                   </span>
                 </td>
                 <td class="px-4 py-3">
-                  <span class="text-xs" :class="m.is_local ? 'text-blue-400' : 'text-gray-500'">
+                  <span class="text-xs" :class="m.is_local ? 'text-sky-700' : 'text-ink-500'">
                     {{ m.is_local ? '本地管理' : '外部' }}
                   </span>
                 </td>
@@ -66,8 +66,8 @@
                     :disabled="removingId === memberKey(m)"
                     class="px-3 py-1.5 rounded-lg text-xs font-medium border transition"
                     :class="removingId === memberKey(m)
-                      ? 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed'
-                      : 'bg-rose-600/10 text-rose-400 border-rose-500/30 hover:bg-rose-600/20'"
+                      ? 'bg-ink-100 text-ink-400 border-hairline cursor-not-allowed'
+                      : 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'"
                   >
                     {{ removingId === memberKey(m) ? '处理中...' : '移出' }}
                   </button>
@@ -80,10 +80,10 @@
     </div>
 
     <!-- Loading -->
-    <div v-else-if="loading" class="bg-gray-900 border border-gray-800 rounded-xl h-64 animate-pulse"></div>
+    <div v-else-if="loading" class="glass-soft rounded-lg h-64 shimmer-bg"></div>
 
     <!-- Empty -->
-    <div v-else class="text-center text-gray-500 py-12">
+    <div v-else class="text-center text-ink-500 py-12">
       点击「刷新」加载 Team 成员列表
     </div>
   </div>

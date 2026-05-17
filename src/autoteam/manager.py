@@ -65,12 +65,17 @@ from autoteam.codex_auth import (
     save_auth_file,
 )
 from autoteam.config import get_playwright_context_options, get_playwright_launch_options
-from autoteam.cpa_sync import sync_from_cpa, sync_main_codex_to_cpa, sync_to_cpa
+from autoteam.cpa_sync import sync_from_cpa
 from autoteam.identity import random_birthday, random_password
 from autoteam.invite import RegisterBlocked  # SPEC-2 shared/add-phone-detection §5 — 5 处 OAuth 调用方 catch
 from autoteam.playwright_lifecycle import close_playwright_objects
 from autoteam.register_failures import MASTER_SUBSCRIPTION_DEGRADED, record_failure
 from autoteam.signup_profile import SignupProfile, generate_signup_profile
+from autoteam.sync_targets import (
+    sync_account_to_configured_targets,
+    sync_main_codex_to_configured_targets as sync_main_codex_to_cpa,
+    sync_to_configured_targets as sync_to_cpa,
+)
 from autoteam.textio import read_text, write_text
 
 logger = logging.getLogger(__name__)
@@ -189,6 +194,46 @@ def _has_auth_file(acc: dict | None) -> bool:
     acc = acc or {}
     auth_file = (acc.get("auth_file") or "").strip()
     return bool(auth_file) and Path(auth_file).exists()
+
+
+def _has_account_mail_binding(acc: dict | None) -> bool:
+    acc = acc or {}
+    return acc.get("mail_account_id") is not None or acc.get("cloudmail_account_id") is not None
+
+
+def _is_protected_local_credential_seat(acc: dict | None) -> bool:
+    if not acc or acc.get("disabled") is True or _is_main_account_email(acc.get("email")):
+        return False
+    has_auth = _has_auth_file(acc)
+    if acc.get("status") == STATUS_EXHAUSTED:
+        return False
+    if acc.get("protect_team_seat") is True:
+        return has_auth
+    if not has_auth:
+        return False
+    if acc.get("status") in (STATUS_STANDBY, STATUS_AUTH_INVALID):
+        return True
+    return not _has_account_mail_binding(acc)
+
+
+def _sync_ready_credential_to_targets(email: str, auth_file: str | None, *, stage_label: str) -> dict:
+    if not auth_file:
+        logger.warning("%s 新凭证已就绪但缺少 auth_file，跳过即时同步: %s", stage_label, email)
+        return {"ok": False, "skipped": True, "reason": "missing_auth_file"}
+
+    try:
+        result = sync_account_to_configured_targets(email, str(auth_file))
+    except Exception as exc:
+        logger.warning("%s 新凭证即时同步失败，保留本地结果: %s (%s)", stage_label, email, exc)
+        return {"ok": False, "error": str(exc)}
+
+    if isinstance(result, dict) and result.get("ok") and not result.get("skipped"):
+        logger.info("%s 新凭证已即时同步: %s (%s)", stage_label, email, Path(auth_file).name)
+    elif isinstance(result, dict) and result.get("ok") and result.get("skipped"):
+        logger.info("%s 新凭证即时同步跳过: %s (%s)", stage_label, email, result.get("reason"))
+    else:
+        logger.warning("%s 新凭证即时同步未完全成功，保留本地结果: %s (%s)", stage_label, email, result)
+    return result if isinstance(result, dict) else {"ok": False, "result": result}
 
 
 def _ensure_account_ipv6_proxy(email: str | None) -> tuple[str, str]:
@@ -2449,6 +2494,8 @@ def _run_post_register_oauth(
                 )
         # personal 分支:已主动退出 Team,bundle 是个人 free/plus plan,算 codex 席位
         update_account(email, **update_fields)
+        if update_fields["status"] == STATUS_ACTIVE:
+            _sync_ready_credential_to_targets(email, auth_file, stage_label="[注册]")
         logger.info("[注册] 免费号就绪: %s (plan=%s, attempts=%d)",
                     email, bundle.get("plan_type"), len(plan_drift_history) + 1)
         _record_outcome("success", plan=bundle.get("plan_type"))
@@ -2624,6 +2671,8 @@ def _run_post_register_oauth(
                                stage="run_post_register_oauth_team")
 
         update_account(email, **update_fields)
+        if update_fields["status"] == STATUS_ACTIVE:
+            _sync_ready_credential_to_targets(email, auth_file, stage_label="[注册]")
         if update_fields["status"] == STATUS_ACTIVE:
             logger.info("[注册] 账号就绪: %s (seat=%s)", email, seat_label)
             _record_outcome("success", plan=bundle_plan)
@@ -4223,6 +4272,7 @@ def reinvite_account(chatgpt_api, mail_client, acc):
             "[轮转] %s _auth_repair_reset 抛异常(忽略): %s",
             email, repair_exc,
         )
+    _sync_ready_credential_to_targets(email, auth_file, stage_label="[轮转]")
     logger.info("[轮转] 旧账号已恢复: %s", email)
     return True
 

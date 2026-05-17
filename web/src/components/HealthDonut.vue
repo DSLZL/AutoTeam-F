@@ -19,9 +19,9 @@
         class="transition-all duration-500" />
     </svg>
     <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-      <div class="text-[10px] uppercase tracking-widest text-gray-500 leading-none">{{ centerLabel }}</div>
-      <div class="text-2xl font-bold text-white tabular leading-none mt-1">{{ centerValue }}</div>
-      <div v-if="centerHint" class="text-[10px] text-gray-500 mt-0.5">{{ centerHint }}</div>
+      <div class="text-[10px] uppercase tracking-widest text-ink-500 leading-none">{{ centerLabel }}</div>
+      <div class="text-2xl font-bold text-ink-950 tabular leading-none mt-1">{{ centerValue }}</div>
+      <div v-if="centerHint" class="text-[10px] text-ink-500 mt-0.5">{{ centerHint }}</div>
     </div>
   </div>
 </template>

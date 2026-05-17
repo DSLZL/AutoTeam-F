@@ -32,7 +32,7 @@ from autoteam.accounts import (
 )
 from autoteam.chatgpt_api import ChatGPTTeamAPI
 from autoteam.cloudmail import CloudMailClient
-from autoteam.config import get_playwright_launch_options
+from autoteam.config import get_playwright_context_options, get_playwright_launch_options
 from autoteam.identity import random_password
 from autoteam.playwright_lifecycle import close_playwright_objects
 from autoteam.signup_profile import generate_signup_profile
@@ -580,10 +580,7 @@ def run():
             page = None
             try:
                 browser = p.chromium.launch(**get_playwright_launch_options())
-                context = browser.new_context(
-                    viewport={"width": 1280, "height": 800},
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
-                )
+                context = browser.new_context(**get_playwright_context_options())
                 page = context.new_page()
 
                 result, pwd = register_with_invite(page, invite_link, email, mail_client)

@@ -1,9 +1,9 @@
 <template>
   <div class="space-y-5">
     <div>
-      <div class="text-[10px] uppercase tracking-[0.3em] text-indigo-300/70 mb-1">Configuration</div>
+      <div class="text-[10px] uppercase tracking-[0.3em] text-indigo-700 mb-1">Configuration</div>
       <h2 class="text-2xl font-extrabold text-ink-950 tracking-tight">设置</h2>
-      <p class="text-sm text-gray-400 mt-1">管理员登录、巡检策略、邮箱后端、生命周期参数,皆可在此调整。</p>
+      <p class="text-sm text-ink-500 mt-1">管理员登录、巡检策略、邮箱后端、生命周期参数,皆可在此调整。</p>
     </div>
 
     <!-- F3 — 共享父级 master-health banner -->
@@ -13,20 +13,20 @@
       :loading="masterHealthLoading"
       @refresh="onReloadMasterHealth" />
 
-    <div class="glass rounded-2xl p-5">
+    <div class="glass rounded-lg p-5">
       <div class="flex items-center justify-between gap-4 mb-4">
         <div>
           <h2 class="text-lg font-semibold text-ink-950">管理员登录</h2>
-          <p class="text-sm text-gray-400 mt-1">
+          <p class="text-sm text-ink-500 mt-1">
             首次启动先在这里完成主号登录，系统会统一写入单个 state.json 文件，保存邮箱、session、workspace ID、workspace 名称；如果你走了密码登录，也会保留密码供主号 Codex 复用。
           </p>
         </div>
         <span
           class="min-w-[72px] px-3 py-1.5 rounded-full text-xs text-center whitespace-nowrap border"
           :class="adminConfigured
-            ? 'bg-green-500/10 text-green-400 border-green-500/20'
+            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
             : adminBusy
-              ? 'bg-yellow-500/10 text-yellow-300 border-yellow-500/20'
+              ? 'bg-amber-50 text-amber-700 border-amber-200'
               : 'bg-surface-hover text-ink-500 border-hairline'"
         >
           {{ adminConfigured ? '已配置' : adminBusy ? '登录中' : '未配置' }}
@@ -52,10 +52,10 @@
         </div>
         <div class="px-3 py-3 bg-surface-hover border border-hairline rounded-lg md:col-span-2">
           <div class="text-gray-500 mb-1">Session Token</div>
-          <div v-if="props.adminStatus?.session_present" class="text-green-400 text-xs">已配置</div>
+          <div v-if="props.adminStatus?.session_present" class="text-emerald-700 text-xs">已配置</div>
           <div v-else class="space-y-2">
             <div class="text-amber-400 text-xs">未配置（Team 管理功能需要 session token）</div>
-            <div class="text-gray-400 text-xs space-y-2">
+            <div class="text-ink-500 text-xs space-y-2">
               <div>获取方式：</div>
               <ol class="list-decimal list-inside space-y-1">
                 <li>
@@ -118,12 +118,12 @@
             </button>
           </div>
 
-          <div class="border border-hairline rounded-xl p-4 bg-surface-hover">
+          <div class="border border-hairline rounded-lg p-4 bg-surface-hover">
             <div class="text-sm font-medium text-ink-950">或手动导入 session_token</div>
-            <p class="text-xs text-gray-400 mt-1 mb-3">
+            <p class="text-xs text-ink-500 mt-1 mb-3">
               适合你已经在浏览器里拿到 <span class="font-mono">__Secure-next-auth.session-token</span> 的场景。系统会校验 token，并自动识别 workspace ID / 名称。
             </p>
-            <div class="text-gray-400 text-xs space-y-2 mb-3">
+            <div class="text-ink-500 text-xs space-y-2 mb-3">
               <div>获取方式：</div>
               <ol class="list-decimal list-inside space-y-1">
                 <li>
@@ -189,7 +189,7 @@
       </div>
 
       <div v-if="adminBusy" class="space-y-4">
-        <div class="text-sm text-gray-300">
+        <div class="text-sm text-ink-700">
           当前邮箱: <span class="font-mono">{{ loginEmail || props.adminStatus?.email || '-' }}</span>
         </div>
 
@@ -224,14 +224,14 @@
           <button
             @click="submitCode"
             :disabled="submitting || !code"
-            class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-on-accent text-sm rounded-lg transition disabled:opacity-50 disabled:bg-gray-700 disabled:hover:bg-gray-700"
+            class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-on-accent text-sm rounded-lg transition disabled:opacity-50 disabled:bg-ink-100 disabled:hover:bg-ink-100"
           >
             {{ submitting ? '提交中...' : '提交验证码' }}
           </button>
         </div>
 
         <div v-else-if="props.adminStatus?.login_step === 'workspace_required'" class="space-y-3">
-          <div class="text-sm text-gray-300">
+          <div class="text-sm text-ink-700">
             请选择要进入的组织 / workspace
           </div>
           <select
@@ -251,13 +251,13 @@
           <button
             @click="submitWorkspace"
             :disabled="submitting || !workspaceOptionId"
-            class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-on-accent text-sm rounded-lg transition disabled:opacity-50 disabled:bg-gray-700 disabled:hover:bg-gray-700"
+            class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-on-accent text-sm rounded-lg transition disabled:opacity-50 disabled:bg-ink-100 disabled:hover:bg-ink-100"
           >
             {{ submitting ? '提交中...' : '确认组织选择' }}
           </button>
         </div>
 
-        <div v-if="submitting && adminSubmittingHint" class="text-xs text-blue-300">
+        <div v-if="submitting && adminSubmittingHint" class="text-xs text-sky-700">
           {{ adminSubmittingHint }}
         </div>
 
@@ -273,7 +273,7 @@
       </div>
 
       <div v-if="codexBusy" class="mt-4 space-y-4 border-t border-hairline pt-4">
-        <div class="text-sm text-gray-300">
+        <div class="text-sm text-ink-700">
           主号 Codex 登录继续中
         </div>
 
@@ -314,7 +314,7 @@
           </button>
         </div>
 
-        <div v-if="syncingMain && codexSubmittingHint" class="text-xs text-cyan-300">
+        <div v-if="syncingMain && codexSubmittingHint" class="text-xs text-cyan-700">
           {{ codexSubmittingHint }}
         </div>
 
@@ -330,15 +330,15 @@
       </div>
     </div>
 
-    <div class="glass rounded-2xl p-5">
+    <div class="glass rounded-lg p-5">
       <div class="flex items-center justify-between mb-4">
         <h2 class="text-lg font-semibold text-ink-950">巡检设置</h2>
-        <span v-if="saved" class="text-xs text-green-400 transition">已保存</span>
+        <span v-if="saved" class="text-xs text-emerald-700 transition">已保存</span>
       </div>
 
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div>
-          <label class="block text-sm text-gray-400 mb-1">巡检间隔</label>
+          <label class="block text-sm text-ink-500 mb-1">巡检间隔</label>
           <div class="flex items-center gap-2">
             <input v-model.number="form.interval" type="number" min="1"
               class="w-full px-3 py-2 bg-surface-hover border border-hairline rounded-lg text-sm text-ink-950 focus:outline-none focus:border-indigo-500" />
@@ -346,7 +346,7 @@
           </div>
         </div>
         <div>
-          <label class="block text-sm text-gray-400 mb-1">额度阈值</label>
+          <label class="block text-sm text-ink-500 mb-1">额度阈值</label>
           <div class="flex items-center gap-2">
             <input v-model.number="form.threshold" type="number" min="1" max="100"
               class="w-full px-3 py-2 bg-surface-hover border border-hairline rounded-lg text-sm text-ink-950 focus:outline-none focus:border-indigo-500" />
@@ -354,7 +354,7 @@
           </div>
         </div>
         <div>
-          <label class="block text-sm text-gray-400 mb-1">触发账号数</label>
+          <label class="block text-sm text-ink-500 mb-1">触发账号数</label>
           <div class="flex items-center gap-2">
             <input v-model.number="form.min_low" type="number" min="1"
               class="w-full px-3 py-2 bg-surface-hover border border-hairline rounded-lg text-sm text-ink-950 focus:outline-none focus:border-indigo-500" />
@@ -375,18 +375,18 @@
     </div>
 
     <!-- SPEC-1 §FR-008 / AC-017 — 邮箱后端切换 (Settings 复用 SetupPage 4 步状态机) -->
-    <div class="glass rounded-2xl p-5">
+    <div class="glass rounded-lg p-5">
       <div class="flex items-center justify-between gap-4 mb-4">
         <div>
           <h2 class="text-lg font-semibold text-ink-950">邮箱后端</h2>
-          <p class="text-sm text-gray-400 mt-1">
+          <p class="text-sm text-ink-500 mt-1">
             切换或重新配置临时邮箱服务（cf_temp_email / maillab）。SetupPage 完成后所有字段已落盘，这里仅在需要更换服务时使用。
           </p>
         </div>
         <span
           class="min-w-[72px] px-3 py-1.5 rounded-full text-xs text-center whitespace-nowrap border"
           :class="mailFormDirty
-            ? 'bg-yellow-500/10 text-yellow-300 border-yellow-500/20'
+            ? 'bg-amber-50 text-amber-700 border-amber-200'
               : 'bg-surface-hover text-ink-500 border-hairline'"
         >
           {{ mailFormDirty ? '有改动' : '已配置' }}
@@ -423,10 +423,10 @@
     </div>
 
     <!-- SPEC-2 §席位策略 + 探测节流 -->
-    <div class="glass rounded-2xl p-5">
+    <div class="glass rounded-lg p-5">
       <div class="mb-4">
         <h2 class="text-lg font-semibold text-ink-950">账号生命周期</h2>
-        <p class="text-sm text-gray-400 mt-1">
+        <p class="text-sm text-ink-500 mt-1">
           控制邀请席位偏好(完整 ChatGPT 席位 vs 仅 Codex 席位),以及 sync 巡检识别"被踢"的探测节流。
         </p>
       </div>
@@ -438,7 +438,7 @@
       <div class="mb-4 p-3 bg-surface-hover/60 border border-hairline rounded">
         <div class="flex items-center justify-between mb-2">
           <span class="text-sm text-ink-950">邀请席位偏好</span>
-          <span class="text-xs text-gray-400">{{ preferredSeatType === 'codex' ? '锁定 Codex 席位' : '优先 ChatGPT 完整席位' }}</span>
+          <span class="text-xs text-ink-500">{{ preferredSeatType === 'codex' ? '锁定 Codex 席位' : '优先 ChatGPT 完整席位' }}</span>
         </div>
         <div class="flex gap-2">
           <button
@@ -462,7 +462,7 @@
         <div class="text-sm text-ink-950 mb-2">sync 探测节流</div>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <div class="text-xs text-gray-400 mb-1">并发上限 (1-16)</div>
+            <div class="text-xs text-ink-500 mb-1">并发上限 (1-16)</div>
             <input
               v-model.number="syncProbeConcurrency"
               type="number"
@@ -470,7 +470,7 @@
               class="w-full px-2 py-1.5 bg-surface-hover border border-hairline rounded text-sm text-ink-950" />
           </div>
           <div>
-            <div class="text-xs text-gray-400 mb-1">同号去重冷却 (分钟,1-1440)</div>
+            <div class="text-xs text-ink-500 mb-1">同号去重冷却 (分钟,1-1440)</div>
             <input
               v-model.number="syncProbeCooldown"
               type="number"
@@ -593,8 +593,8 @@ const lifecycleMessageClass = ref('')
 function setLifecycleMessage(text, type = 'success') {
   lifecycleMessage.value = text
   lifecycleMessageClass.value = type === 'success'
-    ? 'bg-green-500/10 text-green-400 border-green-500/20'
-    : 'bg-red-500/10 text-red-400 border-red-500/20'
+    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+    : 'bg-rose-50 text-rose-700 border-rose-200'
   window.clearTimeout(setLifecycleMessage._t)
   setLifecycleMessage._t = window.setTimeout(() => { lifecycleMessage.value = '' }, 8000)
 }
@@ -638,30 +638,24 @@ onMounted(async () => {
       threshold: cfg.threshold,
       min_low: cfg.min_low,
     }
-  } catch (e) {
-    console.error('加载巡检配置失败:', e)
-  }
+  } catch {}
   try {
     const seat = await api.getPreferredSeatType()
     preferredSeatType.value = seat?.value || 'default'
-  } catch (e) {
-    console.error('加载邀请席位偏好失败:', e)
-  }
+  } catch {}
   try {
     const sp = await api.getSyncProbe()
     syncProbeConcurrency.value = sp?.concurrency ?? 5
     syncProbeCooldown.value = sp?.cooldown_minutes ?? 30
-  } catch (e) {
-    console.error('加载 sync 探测节流失败:', e)
-  }
+  } catch {}
   // F3 — 母号订阅健康度由 App 级共享 props.masterHealth,不再本组件自管
 })
 
 function setMessage(text, type = 'success') {
   message.value = text
   messageClass.value = type === 'success'
-    ? 'bg-green-500/10 text-green-400 border-green-500/20'
-    : 'bg-red-500/10 text-red-400 border-red-500/20'
+    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+    : 'bg-rose-50 text-rose-700 border-rose-200'
   window.clearTimeout(setMessage._timer)
   setMessage._timer = window.setTimeout(() => {
     message.value = ''
@@ -882,9 +876,9 @@ const mailFormDirty = computed(() => {
 
 function setMailMessage(text, type = 'success') {
   mailMessage.value = text
-  if (type === 'success') mailMessageClass.value = 'bg-green-500/10 text-green-400 border-green-500/20'
-  else if (type === 'warning') mailMessageClass.value = 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20'
-  else mailMessageClass.value = 'bg-red-500/10 text-red-400 border-red-500/20'
+  if (type === 'success') mailMessageClass.value = 'bg-emerald-50 text-emerald-700 border-emerald-200'
+  else if (type === 'warning') mailMessageClass.value = 'bg-amber-50 text-amber-700 border-amber-200'
+  else mailMessageClass.value = 'bg-rose-50 text-rose-700 border-rose-200'
   window.clearTimeout(setMailMessage._timer)
   setMailMessage._timer = window.setTimeout(() => { mailMessage.value = '' }, 10000)
 }
@@ -895,13 +889,13 @@ function onMailStateChange(s) {
 
 function onMailVerified(payload) {
   if (payload?.leakedProbe) {
-    setMailMessage(`⚠️ 探测邮箱回收失败,请到后台手动删除: ${payload.leakedProbe.email}`, 'warning')
+    setMailMessage(`提醒: 探测邮箱回收失败,请到后台手动删除: ${payload.leakedProbe.email}`, 'warning')
   }
 }
 
 function onMailError(resp) {
   if (resp?.soft && resp.warnings) {
-    setMailMessage('⚠️ ' + resp.warnings.join('; '), 'warning')
+    setMailMessage('提醒: ' + resp.warnings.join('; '), 'warning')
     return
   }
   setMailMessage(`${resp.error_code || 'ERROR'}: ${resp.message || '未知错误'}` +

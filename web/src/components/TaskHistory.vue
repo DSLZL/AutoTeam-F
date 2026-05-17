@@ -1,7 +1,10 @@
 <template>
-  <div class="mt-6 bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-    <div class="px-4 py-3 border-b border-gray-800">
-      <h2 class="text-lg font-semibold text-white">任务历史</h2>
+  <div class="mt-6 glass rounded-lg overflow-hidden">
+    <div class="px-4 py-3 border-b border-hairline">
+      <h2 class="text-lg font-semibold text-ink-950">任务历史</h2>
+      <p v-if="hiddenTaskCount" class="text-xs text-ink-500 mt-1">
+        仅显示最新 {{ visibleTasks.length }} 条，已隐藏 {{ hiddenTaskCount }} 条较早记录。
+      </p>
     </div>
 
     <div v-if="tasks.length === 0" class="px-4 py-8 text-center text-gray-500 text-sm">
@@ -11,7 +14,7 @@
     <div v-else class="overflow-x-auto">
       <table class="w-full text-sm">
         <thead>
-          <tr class="text-gray-400 text-left border-b border-gray-800">
+          <tr class="text-ink-500 text-left border-b border-hairline">
             <th class="px-4 py-3 font-medium">任务 ID</th>
             <th class="px-4 py-3 font-medium">命令</th>
             <th class="px-4 py-3 font-medium">参数</th>
@@ -22,15 +25,15 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="task in tasks" :key="task.task_id"
-            class="border-b border-gray-800/50 hover:bg-gray-800/30 transition">
-            <td class="px-4 py-3 font-mono text-xs text-gray-400">{{ task.task_id }}</td>
+          <tr v-for="task in visibleTasks" :key="task.task_id"
+            class="border-b border-hairline hover:bg-ink-50 transition">
+            <td class="px-4 py-3 font-mono text-xs text-ink-500">{{ task.task_id }}</td>
             <td class="px-4 py-3">
-              <span class="px-2 py-0.5 bg-gray-800 rounded text-xs font-medium text-gray-300">
+              <span class="px-2 py-0.5 bg-ink-50 rounded text-xs font-medium text-ink-700 border border-hairline">
                 {{ task.command }}
               </span>
             </td>
-            <td class="px-4 py-3 text-xs text-gray-400">{{ formatParams(task.params) }}</td>
+            <td class="px-4 py-3 text-xs text-ink-500">{{ formatParams(task.params) }}</td>
             <td class="px-4 py-3">
               <span class="inline-flex items-center gap-1.5 text-xs font-medium" :class="taskStatusClass(task.status)">
                 <span v-if="task.status === 'running'" class="animate-spin inline-block w-3 h-3 border-2 border-current border-t-transparent rounded-full"></span>
@@ -38,9 +41,9 @@
                 {{ taskStatusLabel(task.status) }}
               </span>
             </td>
-            <td class="px-4 py-3 text-xs text-gray-400">{{ formatTime(task.created_at) }}</td>
-            <td class="px-4 py-3 text-xs text-gray-400">{{ duration(task) }}</td>
-            <td class="px-4 py-3 text-xs max-w-xs truncate" :class="task.error ? 'text-red-400' : 'text-gray-400'">
+            <td class="px-4 py-3 text-xs text-ink-500">{{ formatTime(task.created_at) }}</td>
+            <td class="px-4 py-3 text-xs text-ink-500">{{ duration(task) }}</td>
+            <td class="px-4 py-3 text-xs max-w-xs truncate" :class="task.error ? 'text-rose-700' : 'text-ink-500'">
               {{ task.error || formatResult(task.result) }}
             </td>
           </tr>
@@ -51,25 +54,30 @@
 </template>
 
 <script setup>
-defineProps({
+import { computed } from 'vue'
+
+const props = defineProps({
   tasks: { type: Array, default: () => [] },
 })
 
+const visibleTasks = computed(() => props.tasks.slice(0, 200))
+const hiddenTaskCount = computed(() => Math.max(0, props.tasks.length - visibleTasks.value.length))
+
 function taskStatusClass(s) {
   return {
-    pending: 'text-gray-400',
-    running: 'text-yellow-400',
-    completed: 'text-green-400',
-    failed: 'text-red-400',
-  }[s] || 'text-gray-400'
+    pending: 'text-ink-500',
+    running: 'text-amber-700',
+    completed: 'text-emerald-700',
+    failed: 'text-rose-700',
+  }[s] || 'text-ink-500'
 }
 
 function taskDotClass(s) {
   return {
-    pending: 'bg-gray-400',
-    completed: 'bg-green-400',
-    failed: 'bg-red-400',
-  }[s] || 'bg-gray-400'
+    pending: 'bg-ink-400',
+    completed: 'bg-emerald-500',
+    failed: 'bg-rose-500',
+  }[s] || 'bg-ink-400'
 }
 
 function taskStatusLabel(s) {

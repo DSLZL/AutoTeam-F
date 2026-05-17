@@ -1,6 +1,6 @@
 const BASE = '/api'
 
-function getApiKey() {
+export function getApiKey() {
   return localStorage.getItem('autoteam_api_key') || ''
 }
 
@@ -52,6 +52,10 @@ export const api = {
   getAccounts: () => request('GET', '/accounts'),
   getActiveAccounts: () => request('GET', '/accounts/active'),
   getStandbyAccounts: () => request('GET', '/accounts/standby'),
+  bulkDisableAccounts: (emails) => request('POST', '/accounts/bulk/disable', { emails }),
+  bulkEnableAccounts: (emails) => request('POST', '/accounts/bulk/enable', { emails }),
+  disableAccount: (email) => request('POST', `/accounts/${encodeURIComponent(email)}/disable`),
+  enableAccount: (email) => request('POST', `/accounts/${encodeURIComponent(email)}/enable`),
   deleteAccount: (email) => request('DELETE', `/accounts/${encodeURIComponent(email)}`),
   deleteAccountsBatch: (emails, continueOnError = true) => request('POST', '/accounts/delete-batch', { emails, continue_on_error: continueOnError }),
   loginAccount: (email) => request('POST', '/accounts/login', { email }),

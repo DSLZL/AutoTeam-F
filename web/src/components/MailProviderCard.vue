@@ -13,10 +13,10 @@
 <template>
   <div class="mail-provider-card">
     <!-- 步骤 1:Provider 选择 -->
-    <div class="mb-3 p-3 bg-gray-800/40 border border-gray-800 rounded">
+    <div class="mb-3 p-3 bg-ink-50 border border-hairline rounded">
       <div class="flex items-center justify-between mb-2">
-        <span class="text-sm text-white">{{ mode === 'setup' ? '1. 邮箱后端' : '1. 后端类型' }}</span>
-        <span class="text-xs" :class="state === 'PROVIDER' ? 'text-yellow-400' : 'text-green-400'">
+        <span class="text-sm text-ink-950">{{ mode === 'setup' ? '1. 邮箱后端' : '1. 后端类型' }}</span>
+        <span class="text-xs" :class="state === 'PROVIDER' ? 'text-amber-700' : 'text-emerald-700'">
           {{ state === 'PROVIDER' ? '请选择' : '已选 ' + form.MAIL_PROVIDER }}
         </span>
       </div>
@@ -25,8 +25,8 @@
           v-for="opt in providerOptions" :key="opt.value"
           @click="selectProvider(opt.value)"
           :class="form.MAIL_PROVIDER === opt.value
-            ? 'bg-blue-600 border-blue-500 text-white'
-            : 'bg-gray-800 border-gray-700 text-gray-300'"
+            ? 'bg-indigo-600 border-indigo-500 text-on-accent'
+            : 'bg-surface border-hairline text-ink-700 hover:bg-ink-100'"
           class="flex-1 px-3 py-2 border rounded text-sm transition">
           <div class="font-medium">{{ opt.label }}</div>
           <div class="text-xs opacity-75 mt-0.5">{{ opt.desc }}</div>
@@ -37,7 +37,7 @@
     <!-- 步骤 2:服务器连接 -->
     <div class="mb-3 p-3 rounded border" :class="cardClass('CONNECTION')">
       <div class="flex items-center justify-between mb-2">
-        <span class="text-sm text-white">2. 服务器连接</span>
+        <span class="text-sm text-ink-950">2. 服务器连接</span>
         <span class="text-xs" :class="connectionStatusClass">{{ connectionStatus }}</span>
       </div>
       <div class="space-y-2" :class="state === 'PROVIDER' ? 'opacity-40 pointer-events-none' : ''">
@@ -45,22 +45,22 @@
           v-model="form[baseUrlKey]"
           type="text"
           :placeholder="form.MAIL_PROVIDER === 'maillab' ? 'https://your-maillab.example.com' : 'https://example.com/api'"
-          class="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white" />
+          class="w-full px-2 py-1.5 bg-surface border border-hairline rounded text-sm text-ink-950 focus-ring" />
         <input
           v-if="form.MAIL_PROVIDER === 'maillab'"
           v-model="form.MAILLAB_USERNAME"
           type="text"
           placeholder="管理员邮箱 (MAILLAB_USERNAME)"
-          class="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white" />
+          class="w-full px-2 py-1.5 bg-surface border border-hairline rounded text-sm text-ink-950 focus-ring" />
         <input
           v-model="form[passwordKey]"
           type="password"
           :placeholder="passwordPlaceholder"
-          class="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white" />
+          class="w-full px-2 py-1.5 bg-surface border border-hairline rounded text-sm text-ink-950 focus-ring" />
         <button
           @click="testConnection"
           :disabled="testing || !canTestConnection"
-          class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs rounded">
+          class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-on-accent text-xs rounded focus-ring">
           {{ testing ? '测试中...' : '测试连接' }}
         </button>
       </div>
@@ -69,14 +69,14 @@
     <!-- 步骤 3:域名归属 -->
     <div class="mb-3 p-3 rounded border" :class="cardClass('DOMAIN')">
       <div class="flex items-center justify-between mb-2">
-        <span class="text-sm text-white">3. 域名归属</span>
+        <span class="text-sm text-ink-950">3. 域名归属</span>
         <span class="text-xs" :class="domainStatusClass">{{ domainStatus }}</span>
       </div>
       <div class="space-y-2" :class="!canEnterDomain ? 'opacity-40 pointer-events-none' : ''">
         <select
           v-if="domainList && domainList.length"
           v-model="selectedDomain"
-          class="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white">
+          class="w-full px-2 py-1.5 bg-surface border border-hairline rounded text-sm text-ink-950 focus-ring">
           <option v-for="d in domainList" :key="d" :value="stripAt(d)">{{ d }}</option>
         </select>
         <input
@@ -84,11 +84,11 @@
           v-model="selectedDomain"
           type="text"
           placeholder="example.com"
-          class="w-full px-2 py-1.5 bg-gray-800 border border-gray-700 rounded text-sm text-white" />
+          class="w-full px-2 py-1.5 bg-surface border border-hairline rounded text-sm text-ink-950 focus-ring" />
         <button
           @click="verifyDomain"
           :disabled="verifying || !selectedDomain"
-          class="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs rounded">
+          class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-on-accent text-xs rounded focus-ring">
           {{ verifying ? '验证中...' : '验证归属' }}
         </button>
       </div>
@@ -108,7 +108,7 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue', 'state-change', 'verified', 'error'])
 
 // form 通过 v-model 双向绑定;直接 mutate 内部对象再 emit 完整对象保持 reactivity。
-const form = computed({
+let form = computed({
   get: () => props.modelValue,
   set: (v) => emit('update:modelValue', v),
 })
@@ -154,8 +154,8 @@ const connectionStatus = computed(() => {
   return detectedProvider.value ? `已通过 (${detectedProvider.value})` : '已通过'
 })
 const connectionStatusClass = computed(() => {
-  if (state.value === 'PROVIDER' || state.value === 'CONNECTION') return 'text-yellow-400'
-  return 'text-green-400'
+  if (state.value === 'PROVIDER' || state.value === 'CONNECTION') return 'text-amber-700'
+  return 'text-emerald-700'
 })
 
 const domainStatus = computed(() => {
@@ -164,7 +164,7 @@ const domainStatus = computed(() => {
   if (state.value === 'DOMAIN') return '请验证域名归属'
   return '已通过'
 })
-const domainStatusClass = computed(() => state.value === 'SAVE' ? 'text-green-400' : 'text-yellow-400')
+const domainStatusClass = computed(() => state.value === 'SAVE' ? 'text-emerald-700' : 'text-amber-700')
 
 watch(state, (s) => emit('state-change', s))
 
@@ -172,9 +172,9 @@ function cardClass(targetState) {
   const order = ['PROVIDER', 'CONNECTION', 'DOMAIN', 'SAVE']
   const cur = order.indexOf(state.value)
   const tgt = order.indexOf(targetState)
-  if (tgt > cur) return 'bg-gray-800/20 border-gray-800'
-  if (tgt < cur) return 'bg-green-900/10 border-green-900/40'
-  return 'bg-blue-900/10 border-blue-700/40'
+  if (tgt > cur) return 'bg-ink-50 border-hairline'
+  if (tgt < cur) return 'bg-emerald-50 border-emerald-200'
+  return 'bg-indigo-50 border-indigo-200'
 }
 
 function stripAt(d) {

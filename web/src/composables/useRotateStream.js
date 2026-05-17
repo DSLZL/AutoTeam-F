@@ -14,6 +14,7 @@
 //   { email, from, to, reason, ts, extra }
 
 import { onMounted, onUnmounted, ref } from 'vue'
+import { getApiKey } from '../api.js'
 
 const DEFAULT_URL = '/api/rotate/stream'
 const MAX_EVENTS = 50
@@ -33,6 +34,14 @@ export function useRotateStream(opts = {}) {
   let stoppedByQuota = false
   const transitionCallbacks = new Set()
 
+  function urlWithAuthKey() {
+    const key = getApiKey()
+    if (!key) return url
+    const target = new URL(url, window.location.origin)
+    target.searchParams.set('key', key)
+    return `${target.pathname}${target.search}`
+  }
+
   function _push(payload) {
     // 首条 = 最新;超过 max 截尾
     events.value = [payload, ...events.value].slice(0, max)
@@ -49,7 +58,7 @@ export function useRotateStream(opts = {}) {
   function connect() {
     if (source || stoppedByQuota) return
     try {
-      source = new EventSource(url)
+      source = new EventSource(urlWithAuthKey())
     } catch (e) {
       console.warn('[useRotateStream] EventSource ctor failed', e)
       lastError.value = e
