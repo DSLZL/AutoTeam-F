@@ -69,11 +69,36 @@ Authorization: Bearer <API_KEY>
 | POST | `/api/tasks/check` | 检查额度，`{"include_standby": false}` 追加探测 standby 池（限速 1.5s/号 + 24h 去重） |
 | POST | `/api/tasks/add` | 自动注册并添加新账号 |
 | POST | `/api/tasks/fill` | 补满成员 `{"target": 3}` |
+| POST | `/api/tasks/multi-master/fill` | 多 Team 母号并行补位 `{"target": 3, "owner_workers": 2, "direct_parallel": 1, "workspace_ids": null, "dry_run": false}` |
 | POST | `/api/tasks/cleanup` | 清理成员 `{"max_seats": null}` |
 | GET | `/api/tasks` | 任务列表 |
 | GET | `/api/tasks/{task_id}` | 任务详情 |
 
 > 同一时间只允许一个 Playwright 操作；如果有任务执行中，新请求可能返回 `409 Conflict`。
+
+### 多 Team 母号并行补位
+
+`POST /api/tasks/multi-master/fill` 在一个全局后台任务内部调度多个已导入的 Team owner。每个 Team 仍保持 `1 owner + 2 managed children = 3 seats`，并行只发生在 owner worker 维度，不会提高单 Team seat cap。
+
+请求体：
+
+```json
+{
+  "target": 3,
+  "owner_workers": 2,
+  "direct_parallel": 1,
+  "workspace_ids": ["ws-..."],
+  "dry_run": false
+}
+```
+
+- `target` 会按现有 Team 上限 clamp 到 `1..3`。
+- `owner_workers` 会受 `MULTI_MASTER_MAX_OWNER_WORKERS` 和 `MULTI_MASTER_BROWSER_BUDGET` 裁剪。
+- `direct_parallel` 是单 owner direct signup race 的预算参数；当前切片先用于预算和任务可观测，直接注册 race 逻辑仍必须在 `manager.py` 中安全接入后才会改变单账号注册行为。
+- `workspace_ids` 可填 workspace id、owner account id 或 owner email；为空时使用所有 `parallel=true` 且 `enabled=true` 的 owner，若没有 parallel owner 则回退当前 active workspace。
+- `dry_run=true` 不创建后台任务，直接返回 plan，便于确认 owner 列表和预算。
+
+`GET /api/status` 会额外返回 `multi_master` 字段，包含 aggregate summary 与 per-owner diagnostics。该字段不会回显 `session_token`。
 
 ## 管理员运维
 

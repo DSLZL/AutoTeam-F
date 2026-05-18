@@ -27,6 +27,10 @@ cp .env.example .env
 | `AUTO_CHECK_THRESHOLD` | 额度低于此百分比触发轮转 | 否（默认 `10`） |
 | `AUTO_CHECK_INTERVAL` | 巡检间隔（秒） | 否（默认 `300`） |
 | `AUTO_CHECK_MIN_LOW` | 至少几个账号低于阈值才触发 | 否（默认 `2`） |
+| `MULTI_MASTER_MAX_OWNER_WORKERS` | 多 Team 母号并行补位时同时运行的 owner worker 数 | 否（默认 `2`） |
+| `MULTI_MASTER_BROWSER_BUDGET` | owner 并发与 direct signup race 共用的全局浏览器预算 | 否（默认 `4`） |
+| `MULTI_MASTER_MEMORY_DOWNGRADE_RATIO` | cgroup 内存比例达到该值时，多母号并行自动降级为串行 | 否（默认 `0.85`） |
+| `DIRECT_REGISTER_PARALLEL` | 单个注册目标的 direct signup race 预算，当前多母号切片先用于预算/可观测 | 否（默认 `1`） |
 | `RECONCILE_KICK_ORPHAN` | 对账发现"残废"成员(workspace 有 active + 本地 `auth_file` 缺失)时是否自动 KICK。关掉则标记 `STATUS_ORPHAN` 等人工处理 | 否（默认 `true`） |
 | `RECONCILE_KICK_GHOST` | 对账发现"ghost"成员(workspace 有但本地完全无记录)时是否自动 KICK。关掉则留给 `sync_account_states` 反向补录 | 否（默认 `true`） |
 

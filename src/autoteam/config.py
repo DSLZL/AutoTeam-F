@@ -123,6 +123,14 @@ PREDICTIVE_HISTORY_FILE = PROJECT_ROOT / os.environ.get("PREDICTIVE_HISTORY_FILE
 # 上限保守设 8 — Playwright + ChatGPT API 并发更高反而引入抗扰风险.
 ROTATE_CONCURRENCY = max(1, min(8, _get_int_env("ROTATE_CONCURRENCY", 1)))
 
+# Multi-master worker budget. The effective browser fan-out is clipped by
+# MULTI_MASTER_BROWSER_BUDGET so owner-level parallelism and direct signup race
+# parallelism cannot multiply without bound.
+MULTI_MASTER_MAX_OWNER_WORKERS = max(1, min(8, _get_int_env("MULTI_MASTER_MAX_OWNER_WORKERS", 2)))
+MULTI_MASTER_BROWSER_BUDGET = max(1, min(16, _get_int_env("MULTI_MASTER_BROWSER_BUDGET", 4)))
+MULTI_MASTER_MEMORY_DOWNGRADE_RATIO = max(0.0, min(1.0, _get_float_env("MULTI_MASTER_MEMORY_DOWNGRADE_RATIO", 0.85)))
+DIRECT_REGISTER_PARALLEL = max(1, min(4, _get_int_env("DIRECT_REGISTER_PARALLEL", 1)))
+
 
 # 对账策略开关
 # RECONCILE_KICK_ORPHAN=true: 残废成员(workspace 有 + 本地 auth_file 缺失)自动 kick。

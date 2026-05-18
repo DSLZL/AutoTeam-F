@@ -5346,11 +5346,13 @@ def get_team_member_count(chatgpt_api):
     return len(members)
 
 
-def cmd_fill(target=3, leave_workspace=False):
+def cmd_fill(target=3, leave_workspace=False, *, post_sync=True, print_status=True):
     """
     补位流程。
     leave_workspace=False: 补满 Team 席位到 target（原行为），优先复用 standby 旧号
     leave_workspace=True:  按 target 作为"要生产的免费号数量"，每个账号注册后立刻退出 Team、走 personal OAuth
+    post_sync=False:       调度器批量执行时跳过每个 worker 内部 CPA 同步，由父任务收敛同步
+    print_status=False:    调度器批量执行时跳过每个 worker 内部状态表输出
     """
     if leave_workspace:
         return _cmd_fill_personal(target)
@@ -5427,8 +5429,10 @@ def cmd_fill(target=3, leave_workspace=False):
                 logger.info("[填充] 当前成员数: %d/%d", new_count, target)
 
         logger.info("[填充] 填充完成")
-        sync_to_cpa()
-        cmd_status()
+        if post_sync:
+            sync_to_cpa()
+        if print_status:
+            cmd_status()
 
     finally:
         if chatgpt:

@@ -188,6 +188,12 @@ class WorkspacePool:
             "id": ws_id,
             "admin_email": admin_email,
             "account_id": account_id,
+            "workspace_name": str(st.get("workspace_name") or ""),
+            "session_token": str(st.get("session_token") or ""),
+            "enabled": True,
+            "parallel": False,
+            "last_error": "",
+            "last_run_ts": None,
             "tier": TIER_ACTIVE,
             "status": STATUS_UNKNOWN,
             "fail_count": 0,
@@ -288,6 +294,11 @@ class WorkspacePool:
         admin_email: str,
         account_id: str,
         tier: str = TIER_WARM,
+        *,
+        workspace_name: str = "",
+        session_token: str = "",
+        enabled: bool = True,
+        parallel: bool = False,
     ) -> dict:
         """Register a new workspace. If id exists, raise ValueError.
 
@@ -321,6 +332,12 @@ class WorkspacePool:
                 "id": workspace_id,
                 "admin_email": admin_email,
                 "account_id": account_id,
+                "workspace_name": workspace_name or "",
+                "session_token": session_token or "",
+                "enabled": bool(enabled),
+                "parallel": bool(parallel),
+                "last_error": "",
+                "last_run_ts": None,
                 "tier": target_tier,
                 "status": STATUS_UNKNOWN,
                 "fail_count": 0,
@@ -356,6 +373,97 @@ class WorkspacePool:
                 "ts": now,
             })
             snapshot = dict(new_row) | {"transition_log": list(new_row["transition_log"])}
+
+        for ev in events:
+            self._publish(ev)
+        return snapshot
+
+    def upsert(
+        self,
+        workspace_id: str,
+        admin_email: str,
+        account_id: str,
+        tier: str = TIER_WARM,
+        *,
+        workspace_name: str = "",
+        session_token: str = "",
+        enabled: bool = True,
+        parallel: bool = False,
+    ) -> dict:
+        """Create or update a workspace owner row without dropping runtime state."""
+        if not workspace_id or not isinstance(workspace_id, str):
+            raise ValueError("workspace_id required")
+        if not admin_email or not isinstance(admin_email, str):
+            raise ValueError("admin_email required")
+        if not account_id or not isinstance(account_id, str):
+            raise ValueError("account_id required")
+        if tier not in _VALID_TIERS:
+            raise ValueError(f"tier must be one of {_VALID_TIERS!r}")
+
+        events: list[dict] = []
+        with self._lock:
+            doc = self._load_raw()
+            now = time.time()
+            target = None
+            for row in doc["workspaces"]:
+                if row.get("id") == workspace_id:
+                    target = row
+                    break
+
+            if target is None:
+                target_tier = tier
+                if doc.get("active") is None and not any(r.get("tier") == TIER_ACTIVE for r in doc["workspaces"]):
+                    target_tier = TIER_ACTIVE
+                if target_tier == TIER_ACTIVE:
+                    for row in doc["workspaces"]:
+                        if row.get("tier") == TIER_ACTIVE:
+                            _append_transition(row, TIER_ACTIVE, TIER_COLD, "demote_on_upsert_active", now)
+                            row["tier"] = TIER_COLD
+                target = {
+                    "id": workspace_id,
+                    "admin_email": admin_email,
+                    "account_id": account_id,
+                    "workspace_name": workspace_name or "",
+                    "session_token": session_token or "",
+                    "enabled": bool(enabled),
+                    "parallel": bool(parallel),
+                    "last_error": "",
+                    "last_run_ts": None,
+                    "tier": target_tier,
+                    "status": STATUS_UNKNOWN,
+                    "fail_count": 0,
+                    "last_check_ts": None,
+                    "registered_at": now,
+                    "transition_log": [
+                        {"ts": now, "from": None, "to": target_tier, "reason": "upsert_register"},
+                    ],
+                }
+                if target_tier == TIER_ACTIVE:
+                    doc["active"] = workspace_id
+                doc["workspaces"].append(target)
+                events.append({"type": "registered", "workspace_id": workspace_id, "tier": target_tier, "ts": now})
+            else:
+                if tier == TIER_ACTIVE and target.get("tier") != TIER_ACTIVE:
+                    for row in doc["workspaces"]:
+                        if row.get("tier") == TIER_ACTIVE:
+                            _append_transition(row, TIER_ACTIVE, TIER_COLD, "demote_on_upsert_active", now)
+                            row["tier"] = TIER_COLD
+                    _append_transition(target, target.get("tier"), TIER_ACTIVE, "upsert_set_active", now)
+                    target["tier"] = TIER_ACTIVE
+                    doc["active"] = workspace_id
+                target.update({
+                    "admin_email": admin_email,
+                    "account_id": account_id,
+                    "workspace_name": workspace_name or target.get("workspace_name") or "",
+                    "session_token": session_token or target.get("session_token") or "",
+                    "enabled": bool(enabled),
+                    "parallel": bool(parallel),
+                })
+                _append_transition(target, target.get("tier"), target.get("tier"), "upsert_update", now)
+                events.append({"type": "updated", "workspace_id": workspace_id, "ts": now})
+
+            self._save_raw(doc)
+            snapshot = dict(target) | {"transition_log": list(target.get("transition_log") or [])}
 
         for ev in events:
             self._publish(ev)
@@ -554,6 +662,31 @@ class WorkspacePool:
             self._publish(ev)
         return snapshot
 
+    def record_run_result(self, workspace_id: str, *, last_error: str = "", last_run_ts: float | None = None) -> dict:
+        """Persist lightweight per-workspace scheduler telemetry."""
+        if not workspace_id:
+            raise ValueError("workspace_id required")
+        with self._lock:
+            doc = self._load_raw()
+            target = None
+            for row in doc["workspaces"]:
+                if row.get("id") == workspace_id:
+                    target = row
+                    break
+            if target is None:
+                raise KeyError(f"workspace_id {workspace_id!r} not found")
+            target["last_error"] = last_error or ""
+            target["last_run_ts"] = float(last_run_ts or time.time())
+            self._save_raw(doc)
+            snapshot = dict(target) | {"transition_log": list(target.get("transition_log") or [])}
+        self._publish({
+            "type": "run_result",
+            "workspace_id": workspace_id,
+            "last_error": snapshot.get("last_error", ""),
+            "ts": snapshot.get("last_run_ts"),
+        })
+        return snapshot
+
     # --------------------------------------------------------------- helpers
     def _active_row(self, doc: dict) -> dict | None:
         active_id = doc.get("active")
@@ -605,6 +738,12 @@ def _normalize_row(row: Any) -> dict | None:
         "id": rid,
         "admin_email": str(row.get("admin_email") or ""),
         "account_id": str(row.get("account_id") or ""),
+        "workspace_name": str(row.get("workspace_name") or ""),
+        "session_token": str(row.get("session_token") or ""),
+        "enabled": row.get("enabled") is not False,
+        "parallel": bool(row.get("parallel")),
+        "last_error": str(row.get("last_error") or ""),
+        "last_run_ts": row.get("last_run_ts"),
         "tier": tier,
         "status": status,
         "fail_count": fail_count,

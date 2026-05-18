@@ -15,6 +15,8 @@
 import json
 import os
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 from autoteam.textio import read_text, write_text
@@ -23,6 +25,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 STATE_FILE = PROJECT_ROOT / "state.json"
 LEGACY_SESSION_FILE = PROJECT_ROOT / "session"
 STATE_FILE_MODE = 0o666
+_ADMIN_STATE_OVERRIDE: ContextVar[dict | None] = ContextVar("autoteam_admin_state_override", default=None)
 
 
 def _normalize_state(data):
@@ -84,6 +87,9 @@ def _migrate_legacy_state():
 
 
 def load_admin_state():
+    override = _ADMIN_STATE_OVERRIDE.get()
+    if isinstance(override, dict):
+        return dict(override)
     _migrate_legacy_state()
     return _load_state_from_file(STATE_FILE)
 
@@ -93,11 +99,30 @@ def save_admin_state(state):
 
 
 def update_admin_state(**kwargs):
+    override = _ADMIN_STATE_OVERRIDE.get()
+    if isinstance(override, dict):
+        state = _normalize_state({**override, **kwargs})
+        state["updated_at"] = time.time()
+        _ADMIN_STATE_OVERRIDE.set(state)
+        return state
     state = load_admin_state()
     state.update(kwargs)
     state["updated_at"] = time.time()
     save_admin_state(state)
     return state
+
+
+@contextmanager
+def temporary_admin_state(**kwargs):
+    """Use an in-thread admin state without mutating global ``state.json``."""
+    base = load_admin_state()
+    state = _normalize_state({**base, **kwargs})
+    state["updated_at"] = state.get("updated_at") or time.time()
+    token = _ADMIN_STATE_OVERRIDE.set(state)
+    try:
+        yield state
+    finally:
+        _ADMIN_STATE_OVERRIDE.reset(token)
 
 
 def clear_admin_state():
@@ -116,6 +141,9 @@ def get_admin_email():
     Backwards-compat: if the pool is empty / module unavailable, fall back
     to the legacy state.json read so single-workspace installs are unaffected.
     """
+    override = _ADMIN_STATE_OVERRIDE.get()
+    if isinstance(override, dict) and override.get("email"):
+        return override["email"]
     try:
         from autoteam.workspace_pool import default_pool
 
@@ -144,6 +172,11 @@ def get_chatgpt_account_id():
     Backwards-compat: pool empty → legacy state.json read → CHATGPT_ACCOUNT_ID env.
     Pool ID still must pass UUID validation (filters legacy `user-xxx` ids).
     """
+    override = _ADMIN_STATE_OVERRIDE.get()
+    if isinstance(override, dict):
+        override_id = (override.get("account_id") or "").strip()
+        if override_id and _is_valid_uuid(override_id):
+            return override_id
     try:
         from autoteam.workspace_pool import default_pool
 

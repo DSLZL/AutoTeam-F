@@ -160,3 +160,99 @@ def start_with_session(self, session_token, account_id, workspace_name="", requi
 ```
 
 Use `require_browser=True` for any path that depends on a real browser context. Keep the default environment value aligned with `autoteam-1` as `auto`, and keep `curl_cffi` isolated to backend API reads/writes plus browser fallback.
+
+## Scenario: Multi-Master Owner Fill Scheduling
+
+### 1. Scope / Trigger
+
+- Trigger: any change to multi-Team owner scheduling, `/api/tasks/multi-master/fill`, `/api/status.multi_master`, workspace-pool owner metadata, or owner/direct-registration concurrency budgets.
+- Goal: allow several imported Team owners to fill their own managed children inside one observable API task while preserving the single-Team `1 owner + 2 managed children = 3 seats` cap.
+- Applies to:
+  - `src/autoteam/multi_master.py`
+  - `src/autoteam/workspace_pool.py`
+  - `src/autoteam/admin_state.py`
+  - `src/autoteam/api.py`
+  - `src/autoteam/manager.py::cmd_fill`
+
+### 2. Signatures
+
+- `WorkspacePool.upsert(workspace_id, admin_email, account_id, tier=TIER_WARM, *, workspace_name="", session_token="", enabled=True, parallel=False) -> dict`
+- `WorkspacePool.record_run_result(workspace_id, *, last_error="", last_run_ts=None) -> dict`
+- `temporary_admin_state(**kwargs) -> contextmanager`
+- `build_multi_master_status(accounts=None, pool=None) -> dict`
+- `resolve_worker_budget(owner_count, *, requested_owner_workers=None, requested_direct_parallel=None, runtime_snapshot=None) -> dict`
+- `run_multi_master_fill(target_seats=3, *, owner_workers=None, direct_parallel=None, workspace_ids=None, dry_run=False, post_sync=True, pool=None, worker=None) -> dict`
+- `cmd_fill(target=3, leave_workspace=False, *, post_sync=True, print_status=True)`
+- `POST /api/tasks/multi-master/fill`
+
+### 3. Contracts
+
+- A multi-master task is one API mutation task. Do not open independent untracked API mutation tasks for each owner.
+- `target_seats_per_owner` must stay clamped to `1..3`; `child_cap_per_owner` is `2`.
+- Eligible owner rows come from `WorkspacePool` rows with `enabled != false`, `parallel == true`, `admin_email`, and `account_id`. If none are marked parallel, read-only planning/status may fall back to the active workspace for backwards compatibility.
+- Per-owner workers must use `temporary_admin_state(...)` so `ChatGPTTeamAPI.start()` reads the owner-local session/account/workspace data without mutating global `state.json`.
+- Owner worker failures are isolated. One failed owner becomes one failed result row and must not prevent other submitted owners from completing.
+- `session_token` may be persisted in the local workspace pool for imported owners, but API status and task results must expose only `session_present`, never the raw token.
+- `MULTI_MASTER_MAX_OWNER_WORKERS`, `MULTI_MASTER_BROWSER_BUDGET`, `MULTI_MASTER_MEMORY_DOWNGRADE_RATIO`, and `DIRECT_REGISTER_PARALLEL` are the scheduling budget inputs. The effective direct-registration race is a budget value until the direct-signup race is explicitly wired into `manager.py`; do not claim single-account race behavior from the scheduler alone.
+- When owner workers call `cmd_fill`, they must set `post_sync=False` and `print_status=False`. The parent multi-master task may run CPA sync once after all owners finish; a post-sync failure should be reported in `post_sync` without converting completed owner work into failed owner work.
+- `/api/status.multi_master` is additive. It must not remove or rename existing status fields and must not raise a 500 if multi-master diagnostics fail.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+| --- | --- |
+| No eligible owners | Return `status="no_owners"` and `owner_workers=0`; do not start owner work |
+| `dry_run=true` | Return a completed plan without creating a background task |
+| Owner row has no session token | Mark it non-runnable in status; execution may fail only that owner |
+| Runtime memory ratio >= `MULTI_MASTER_MEMORY_DOWNGRADE_RATIO` | Force `owner_workers=1` and `direct_register_parallel=1` with reason `memory_high` |
+| `owner_workers * direct_register_parallel` exceeds `MULTI_MASTER_BROWSER_BUDGET` | Clip both values to stay within the global browser budget |
+| One owner worker raises | Record `last_error` for that workspace and return overall `partial_failed` when other owners complete |
+| All owner workers raise | Return overall `failed` |
+| Parent post-sync raises | Return `post_sync.ok=false`; keep per-owner results intact |
+| `/api/status.multi_master` builder raises | Return an error diagnostic block instead of failing `/api/status` |
+
+### 5. Good/Base/Bad Cases
+
+- Good: two imported owners marked `parallel=true` are filled inside one `multi-master-fill` task, each owner uses its own temporary admin state, and final `post_sync` runs once.
+- Base: a single-owner install with no parallel rows still reports compatible status and can dry-run against the active workspace.
+- Bad: increasing `target` above `3` to gain throughput, because this breaks the Team-seat contract.
+- Bad: calling `cmd_fill()` concurrently with its default `post_sync=True`, because each worker would race remote CPA sync and make delete-guard behavior harder to reason about.
+- Bad: returning `session_token` in `/api/status.multi_master.owners` or task result rows.
+
+### 6. Tests Required
+
+- `tests/unit/test_multi_master.py`
+  - `temporary_admin_state` overrides owner state without mutating disk.
+  - `WorkspacePool.upsert` persists owner metadata and keeps the active-workspace invariant.
+  - `build_multi_master_status` groups accounts by `workspace_account_id` and omits session tokens.
+  - `resolve_worker_budget` downgrades on high memory and clips by browser budget.
+  - `run_multi_master_fill` isolates owner failures, records `last_error`, suppresses worker-local sync/status, and reports parent `post_sync`.
+  - API dry-run returns a plan and passes request parameters through.
+- Existing single-owner regressions must still pass:
+  - `tests/unit/test_round12_s7_workspace_pool.py`
+  - `tests/unit/test_api_status.py`
+  - `tests/unit/test_manager_fill.py`
+  - `tests/unit/test_manager_rotate.py`
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+# Starts several independent mutation tasks; each task owns its own view of
+# Playwright/resource state and may race the global task lock.
+for owner in owners:
+    post_fill(TaskParams(target=3))
+```
+
+#### Correct
+
+```python
+run_multi_master_fill(
+    target_seats=3,
+    owner_workers=2,
+    direct_parallel=1,
+)
+```
+
+Keep multi-owner work inside one parent task, and make owner-local state explicit with `temporary_admin_state(...)`.

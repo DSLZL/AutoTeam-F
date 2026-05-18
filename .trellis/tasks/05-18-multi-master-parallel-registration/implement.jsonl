@@ -1,0 +1,5 @@
+{"file": ".trellis/tasks/05-18-multi-master-parallel-registration/prd.md", "reason": "Primary task scope for multi-master Team parallel registration"}
+{"file": ".trellis/tasks/05-18-multi-master-parallel-registration/research/current-vs-target-parallel-registration.md", "reason": "Verified current repo vs target repo parallel registration and workspace-pool baseline"}
+{"file": ".trellis/tasks/05-11-s7-multi-workspace-pool/prd.md", "reason": "Existing workspace pool failover model to extend without duplicating"}
+{"file": ".trellis/spec/backend/free-registration-hardening.md", "reason": "Team seat cap, fill-personal safety boundary, browser-backed registration constraints"}
+{"file": ".trellis/spec/backend/runtime-docker-hardening.md", "reason": "Playwright cleanup, runtime status, CLIProxyAPI health, and browser resource budget constraints"}

@@ -1,0 +1,4 @@
+{"file": ".trellis/tasks/05-18-multi-master-parallel-registration/prd.md", "reason": "Acceptance criteria and out-of-scope boundaries for verification"}
+{"file": ".trellis/tasks/05-18-multi-master-parallel-registration/research/current-vs-target-parallel-registration.md", "reason": "Regression checklist for direct signup parallel import and current single-active workspace gap"}
+{"file": ".trellis/spec/backend/free-registration-hardening.md", "reason": "Verify no single Team exceeds 1 owner + 2 children and free registration safety stays intact"}
+{"file": ".trellis/spec/backend/runtime-docker-hardening.md", "reason": "Verify multi-worker implementation remains observable, bounded, and cleanup-safe"}

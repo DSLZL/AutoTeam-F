@@ -79,6 +79,16 @@ def _safe_cliproxy_health() -> dict:
         }
 
 
+def _safe_multi_master_status() -> dict:
+    try:
+        from autoteam.multi_master import build_multi_master_status
+
+        return build_multi_master_status()
+    except Exception as exc:
+        logger.warning("[API] multi-master status failed: %s", exc)
+        return {"enabled": False, "owner_count": 0, "owners": [], "error": str(exc)}
+
+
 # Round 7 P2.4 — FastAPI 现代 lifespan handler 替代已废弃的 @app.on_event。
 # 启动期:修复 auths 认证文件权限 + 启动 _auto_check_loop 后台线程。
 # 停止期:发 _auto_check_stop 信号让线程优雅退出。
@@ -918,6 +928,14 @@ def _start_task(command: str, func, params: dict, *args, **kwargs) -> dict:
 class TaskParams(BaseModel):
     target: int = 3
     leave_workspace: bool = False  # cmd_fill 专用：True 表示生产免费号（注册后退出 Team 走 personal OAuth）
+
+
+class MultiMasterFillParams(BaseModel):
+    target: int = 3
+    owner_workers: int | None = None
+    direct_parallel: int | None = None
+    workspace_ids: list[str] | None = None
+    dry_run: bool = False
 
 
 class CleanupParams(BaseModel):
@@ -2719,6 +2737,7 @@ def get_status():
         "runtime_resources": _safe_runtime_resource_snapshot(),
         "ipv6_pool": _safe_ipv6_pool_status(),
         "cliproxy": _safe_cliproxy_health(),
+        "multi_master": _safe_multi_master_status(),
         "rotation_validation": {
             **_rotation_validation_cooldown,
             "cooldown_remaining_seconds": int(_rotation_validation_cooldown_remaining()),
@@ -3211,6 +3230,38 @@ def post_fill(params: TaskParams = TaskParams()):
         {"target": params.target, "leave_workspace": params.leave_workspace},
         params.target,
         leave_workspace=params.leave_workspace,
+    )
+    return task
+
+
+@app.post("/api/tasks/multi-master/fill", status_code=202)
+def post_multi_master_fill(params: MultiMasterFillParams = MultiMasterFillParams()):
+    """多母号并行补齐 Team 子号。"""
+    from autoteam.multi_master import run_multi_master_fill
+
+    payload = params.model_dump()
+
+    def _run():
+        return run_multi_master_fill(
+            target_seats=params.target,
+            owner_workers=params.owner_workers,
+            direct_parallel=params.direct_parallel,
+            workspace_ids=params.workspace_ids,
+            dry_run=params.dry_run,
+        )
+
+    if params.dry_run:
+        return {
+            "task_id": None,
+            "command": "multi-master-fill",
+            "status": "completed",
+            "params": payload,
+            "result": _run(),
+        }
+    task = _start_task(
+        "multi-master-fill",
+        _run,
+        payload,
     )
     return task
 

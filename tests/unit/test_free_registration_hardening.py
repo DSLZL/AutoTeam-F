@@ -21,7 +21,7 @@ def test_post_fill_personal_preflight_counts_auth_invalid_as_team_seat(monkeypat
         api.post_fill(api.TaskParams(target=1, leave_workspace=True))
 
     assert exc.value.status_code == 409
-    assert "Team 子号已满 4/4" in str(exc.value.detail)
+    assert f"Team 子号已满 4/{manager_mod.TEAM_SUB_ACCOUNT_HARD_CAP}" in str(exc.value.detail)
 
 
 class _FakeElement:

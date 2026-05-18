@@ -1202,6 +1202,20 @@ class ChatGPTTeamAPI:
             account_id=self.account_id,
             workspace_name=self.workspace_name,
         )
+        try:
+            from autoteam.workspace_pool import default_pool
+
+            default_pool.upsert(
+                f"ws-{self.account_id}",
+                email,
+                self.account_id,
+                workspace_name=self.workspace_name,
+                session_token=session_token,
+                enabled=True,
+                parallel=True,
+            )
+        except Exception as exc:
+            logger.warning("[ChatGPT] workspace pool 记录母号失败: %s", exc)
         logger.info("[ChatGPT] 管理员 session_token 已保存")
 
         return {
