@@ -13,6 +13,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 import autoteam.display  # noqa: F401
+from autoteam import oauth_workspace as _oauth_workspace
 from autoteam.accounts import is_supported_plan, normalize_plan_type
 from autoteam.admin_state import (
     get_admin_email,
@@ -28,12 +29,24 @@ from autoteam.invite import (  # SPEC-2 shared/add-phone-detection §3 — OAuth
 )
 from autoteam.playwright_lifecycle import close_playwright_objects
 from autoteam.signup_profile import SignupProfile, generate_signup_profile
-from autoteam.textio import write_text
+from autoteam.textio import read_text, write_text
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 SCREENSHOT_DIR = PROJECT_ROOT / "screenshots"
+_OAUTH_TRACE_LIMIT = 40
+_OAUTH_TRACE_KEYWORDS = (
+    "/oauth/authorize",
+    "/sign-in-with-chatgpt/codex",
+    "choose-an-account",
+    "consent",
+    "organization",
+    "email-verification",
+    "log-in",
+    "/auth/callback",
+    "no_valid_organizations",
+)
 
 # Codex OAuth 配置
 CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -41,6 +54,9 @@ CODEX_AUTH_URL = "https://auth.openai.com/oauth/authorize"
 CODEX_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_CALLBACK_PORT = 1455
 CODEX_REDIRECT_URI = f"http://localhost:{CODEX_CALLBACK_PORT}/auth/callback"
+_OTP_REJECTION_FILE = AUTH_DIR / "otp_rejections.json"
+_OTP_REJECTION_TTL_SECONDS = 2 * 60 * 60
+_OTP_REJECTION_MAX_PER_EMAIL = 100
 
 # SPEC-2 shared/quota-classification §4.4 I5 — Codex backend 最小推理端点(用于 uninitialized_seat 二次验证)
 _CODEX_SMOKE_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
@@ -79,6 +95,197 @@ def _parse_jwt_payload(token):
         return {}
 
 
+def _otp_rejection_email_key(email: str | None) -> str:
+    return str(email or "").strip().lower()
+
+
+def _otp_rejection_hash(email: str | None, code: str | None) -> str:
+    key = f"{_otp_rejection_email_key(email)}:{str(code or '').strip()}"
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def _load_otp_rejection_store() -> dict:
+    try:
+        if not _OTP_REJECTION_FILE.exists():
+            return {}
+        data = json.loads(read_text(_OTP_REJECTION_FILE))
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        logger.debug("[Codex] failed to load OTP rejection cache: %s", exc)
+        return {}
+
+
+def _write_otp_rejection_store(data: dict) -> None:
+    try:
+        ensure_auth_dir()
+        write_text(_OTP_REJECTION_FILE, json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True))
+        ensure_auth_file_permissions(_OTP_REJECTION_FILE)
+    except Exception as exc:
+        logger.debug("[Codex] failed to write OTP rejection cache: %s", exc)
+
+
+def _coerce_int(value):
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _load_recent_otp_rejections(email: str | None, *, now: float | None = None):
+    now = time.time() if now is None else float(now)
+    cutoff = now - _OTP_REJECTION_TTL_SECONDS
+    key = _otp_rejection_email_key(email)
+    data = _load_otp_rejection_store()
+    records = data.get(key, [])
+    if not isinstance(records, list):
+        return set(), set()
+
+    code_hashes = set()
+    email_ids = set()
+    kept = []
+    changed = False
+    for record in records:
+        if not isinstance(record, dict):
+            changed = True
+            continue
+        try:
+            created_at = float(record.get("ts") or 0)
+        except Exception:
+            created_at = 0
+        if created_at and created_at < cutoff:
+            changed = True
+            continue
+        code_hash = str(record.get("code_hash") or "").strip()
+        if code_hash:
+            code_hashes.add(code_hash)
+        email_id = _coerce_int(record.get("email_id"))
+        if email_id is not None:
+            email_ids.add(email_id)
+        kept.append(record)
+
+    if changed:
+        if kept:
+            data[key] = kept[-_OTP_REJECTION_MAX_PER_EMAIL:]
+        else:
+            data.pop(key, None)
+        _write_otp_rejection_store(data)
+
+    return code_hashes, email_ids
+
+
+def _record_otp_rejection(email: str | None, code: str | None, email_id, *, now: float | None = None):
+    code = str(code or "").strip()
+    if not code:
+        return None
+
+    now = time.time() if now is None else float(now)
+    cutoff = now - _OTP_REJECTION_TTL_SECONDS
+    key = _otp_rejection_email_key(email)
+    code_hash = _otp_rejection_hash(email, code)
+    email_id_int = _coerce_int(email_id)
+
+    data = _load_otp_rejection_store()
+    records = data.get(key, [])
+    if not isinstance(records, list):
+        records = []
+
+    kept = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        try:
+            created_at = float(record.get("ts") or 0)
+        except Exception:
+            created_at = 0
+        if created_at and created_at < cutoff:
+            continue
+        if str(record.get("code_hash") or "") == code_hash:
+            continue
+        if email_id_int is not None and _coerce_int(record.get("email_id")) == email_id_int:
+            continue
+        kept.append(record)
+
+    kept.append({"code_hash": code_hash, "email_id": email_id_int, "ts": now})
+    data[key] = kept[-_OTP_REJECTION_MAX_PER_EMAIL:]
+    _write_otp_rejection_store(data)
+    return code_hash
+
+
+def _page_excerpt(page, limit=240) -> str:
+    try:
+        text = page.locator("body").inner_text(timeout=1500)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:limit]
+    except Exception:
+        return ""
+
+
+def _normalize_trace_text(value, limit=240) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text[:limit]
+
+
+def _should_trace_oauth_network(url: str | None) -> bool:
+    lowered = (url or "").lower()
+    if "auth.openai.com" not in lowered and f"localhost:{CODEX_CALLBACK_PORT}" not in lowered:
+        return False
+    return any(keyword in lowered for keyword in _OAUTH_TRACE_KEYWORDS)
+
+
+def _append_oauth_trace(trace_events: list[dict], *, kind: str, url: str, **fields) -> None:
+    if not _should_trace_oauth_network(url):
+        return
+
+    entry = {"kind": kind, "url": url}
+    for key, value in fields.items():
+        if value is None:
+            continue
+        if key in {"body_excerpt", "location", "failure", "resource_type"}:
+            entry[key] = _normalize_trace_text(value, limit=320)
+        else:
+            entry[key] = value
+
+    trace_events.append(entry)
+    if len(trace_events) > _OAUTH_TRACE_LIMIT:
+        del trace_events[:-_OAUTH_TRACE_LIMIT]
+
+
+def _oauth_trace_has_login_challenge(trace_events: list[dict]) -> bool:
+    for entry in trace_events[-12:]:
+        for key in ("url", "location"):
+            value = str(entry.get(key) or "").lower()
+            if "/api/accounts/login" in value or "auth.openai.com/log-in" in value:
+                return True
+    return False
+
+
+def _classify_oauth_failure(url: str | None, body_excerpt: str = ""):
+    lowered_url = (url or "").lower()
+    body = (body_excerpt or "").lower()
+
+    if "add-phone" in lowered_url:
+        return "add_phone", "需要手机号验证", False
+    if "verify you are human" in body or "captcha" in body:
+        return "human_verification", "命中人机验证", False
+    if "operation timed out" in body:
+        return "oauth_timeout", "OAuth 授权页操作超时", True
+    if "unsupported_country_region_territory" in body or "country, region, or territory not supported" in body:
+        return "unsupported_region", "OAuth 授权接口返回不支持当前地区/出口", True
+    if "choose-an-account" in lowered_url:
+        return "account_selection", "停留在账号选择页", True
+    if "no_valid_organizations" in body or "no valid organizations" in body:
+        return "no_valid_organizations", "OAuth 授权页未选中可用 organization", True
+    if "unable to load site" in body or "try again later" in body or "status page" in body:
+        return "site_unavailable", "站点暂时不可用或代理异常", True
+    if "email-verification" in lowered_url:
+        return "email_verification", "卡在邮箱验证码页", True
+    if "workspace" in lowered_url:
+        return "workspace_selection", "卡在 workspace 选择页", True
+    if "/auth/login" in lowered_url or "/log-in" in lowered_url or "log-in-or-create-account" in lowered_url:
+        return "login_state_lost", "登录态丢失或回到了登录页", True
+    return "auth_code_missing", f"未获取到 auth code（停留在 {lowered_url or 'unknown'}）", True
+
+
 def _screenshot(page, name):
     SCREENSHOT_DIR.mkdir(exist_ok=True)
     page.screenshot(path=str(SCREENSHOT_DIR / name), full_page=True)
@@ -96,6 +303,21 @@ def _build_auth_url(code_challenge, state):
         "prompt": "consent",
     }
     return f"{CODEX_AUTH_URL}?{urllib.parse.urlencode(params)}"
+
+
+def _is_workspace_selection_page(page) -> bool:
+    """Compatibility wrapper around the shared OAuth workspace detector."""
+    return _oauth_workspace._is_workspace_selection_page(page)
+
+
+def _workspace_label_candidates(page):
+    """Compatibility wrapper around shared workspace label extraction."""
+    return _oauth_workspace._workspace_label_candidates(page)
+
+
+def _select_team_workspace(page, workspace_name: str) -> bool:
+    """Compatibility wrapper around shared Team workspace selection."""
+    return _oauth_workspace._select_team_workspace(page, workspace_name)
 
 
 def _exchange_auth_code(auth_code, code_verifier, fallback_email=None):
@@ -290,6 +512,196 @@ def fetch_nextauth_backend_access_token(page):
         len(access_token),
     )
     return access_token
+
+
+def _bundle_from_access_token(access_token, email, account_id):
+    claims = _parse_jwt_payload(access_token)
+    auth_claims = claims.get("https://api.openai.com/auth", {})
+    raw_plan = auth_claims.get("chatgpt_plan_type", "unknown")
+    resolved_email = claims.get("email", email or "")
+    resolved_account_id = account_id or auth_claims.get("chatgpt_account_id", "")
+    return {
+        "access_token": access_token,
+        "refresh_token": "",
+        "id_token": access_token,
+        "account_id": resolved_account_id,
+        "email": resolved_email,
+        "plan_type": normalize_plan_type(raw_plan),
+        "plan_type_raw": raw_plan,
+        "plan_supported": is_supported_plan(raw_plan),
+        "expired": time.time() + 3600,
+    }
+
+
+def _bundle_from_session_token(session_token, email, account_id):
+    return _bundle_from_access_token(session_token, email, account_id)
+
+
+def _oauth_result_from_bundle(bundle):
+    return {
+        "ok": True,
+        "bundle": bundle,
+        "error_type": None,
+        "error_detail": None,
+        "retryable": False,
+    }
+
+
+def _inject_team_account_cookies(context, account_id: str | None) -> None:
+    account_id = (account_id or "").strip()
+    if not account_id:
+        return
+    try:
+        context.add_cookies(
+            [
+                {
+                    "name": "_account",
+                    "value": account_id,
+                    "domain": "chatgpt.com",
+                    "path": "/",
+                    "secure": True,
+                    "sameSite": "Lax",
+                },
+                {
+                    "name": "_account",
+                    "value": account_id,
+                    "domain": "auth.openai.com",
+                    "path": "/",
+                    "secure": True,
+                    "sameSite": "Lax",
+                },
+            ]
+        )
+    except Exception as exc:
+        logger.debug("[Codex-Fallback] 注入 Team account cookie 失败: %s", exc)
+
+
+def _is_valid_team_access_token(access_token: str | None, account_id: str | None) -> bool:
+    if not access_token:
+        return False
+    claims = _parse_jwt_payload(access_token)
+    auth_claims = claims.get("https://api.openai.com/auth", {})
+    plan_type = normalize_plan_type(auth_claims.get("chatgpt_plan_type", ""))
+    token_account_id = str(auth_claims.get("chatgpt_account_id") or "").strip()
+    expected_account_id = str(account_id or "").strip()
+    if expected_account_id and token_account_id and token_account_id != expected_account_id:
+        return False
+    return plan_type == "team"
+
+
+def _session_token_supports_team_quota(page, session_token, account_id):
+    try:
+        result = page.evaluate(
+            """async ([teamAccountId, token]) => {
+                try {
+                    const resp = await fetch("/backend-api/wham/usage", {
+                        credentials: "include",
+                        headers: {
+                            "Accept": "application/json",
+                            "Authorization": `Bearer ${token || ""}`,
+                        },
+                    });
+                    const text = await resp.text().catch(() => "");
+                    return { status: resp.status, body: text };
+                } catch (e) {
+                    return { status: 0, body: String(e && e.message || e) };
+                }
+            }""",
+            [account_id, session_token],
+        )
+    except Exception as exc:
+        logger.info("[Codex-Fallback] Team quota probe exception: %s", exc)
+        return False
+
+    status = result.get("status") if isinstance(result, dict) else None
+    if status == 200:
+        return True
+    logger.info(
+        "[Codex-Fallback] Team quota probe rejected session token: status=%s body=%s",
+        status,
+        (result or {}).get("body", "") if isinstance(result, dict) else "",
+    )
+    return False
+
+
+def _fetch_team_session_bundle_from_context(
+    context,
+    email: str,
+    account_id: str | None,
+    *,
+    stage_label: str,
+    attempts: int = 3,
+) -> dict | None:
+    """Use an already logged-in ChatGPT session as Codex auth material."""
+
+    account_id = (account_id or "").strip()
+    page = None
+    try:
+        _inject_team_account_cookies(context, account_id)
+        page = context.new_page()
+        target_url = f"https://chatgpt.com/admin/workspace/{account_id}" if account_id else "https://chatgpt.com/"
+        page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+        time.sleep(2)
+
+        for attempt in range(1, max(1, attempts) + 1):
+            session = page.evaluate(
+                """async () => {
+                    try {
+                        const resp = await fetch("/api/auth/session");
+                        return await resp.json();
+                    } catch (e) {
+                        return { error: String(e && e.message || e) };
+                    }
+                }"""
+            )
+            token = session.get("accessToken") if isinstance(session, dict) else None
+            if _is_valid_team_access_token(token, account_id):
+                bundle = _bundle_from_access_token(token, email, account_id)
+                logger.info(
+                    "[Codex-Fallback] %s 获取到 ChatGPT Team session token: email=%s plan=%s",
+                    stage_label,
+                    bundle.get("email") or email,
+                    bundle.get("plan_type"),
+                )
+                return bundle
+
+            if token and _session_token_supports_team_quota(page, token, account_id):
+                bundle = _bundle_from_session_token(token, email, account_id)
+                bundle["plan_type"] = "team"
+                bundle["plan_supported"] = True
+                logger.info(
+                    "[Codex-Fallback] %s JWT claims 未切到 Team，但 wham/usage 已验证目标 Team 可用: email=%s account=%s",
+                    stage_label,
+                    bundle.get("email") or email,
+                    account_id,
+                )
+                return bundle
+
+            if token:
+                claims = _parse_jwt_payload(token)
+                auth_claims = claims.get("https://api.openai.com/auth", {})
+                logger.info(
+                    "[Codex-Fallback] %s session token 不匹配 Team workspace (attempt %d/%d): account=%s plan=%s",
+                    stage_label,
+                    attempt,
+                    attempts,
+                    auth_claims.get("chatgpt_account_id"),
+                    auth_claims.get("chatgpt_plan_type"),
+                )
+
+            if attempt < attempts:
+                page.reload(wait_until="domcontentloaded", timeout=30000)
+                time.sleep(1)
+        return None
+    except Exception as exc:
+        logger.warning("[Codex-Fallback] %s session bundle 提取失败: %s", stage_label, exc)
+        return None
+    finally:
+        if page is not None:
+            try:
+                page.close()
+            except Exception:
+                pass
 
 
 def fetch_personal_uuid(access_token):
@@ -646,6 +1058,378 @@ def _click_primary_auth_button(page, field, labels):
         return False
 
 
+def _select_existing_api_organization(page) -> bool:
+    trigger_selectors = (
+        'button:has-text("New organization")',
+        '[role="button"]:has-text("New organization")',
+        'button:has-text("新组织")',
+        '[role="button"]:has-text("新组织")',
+    )
+
+    for selector in trigger_selectors:
+        try:
+            trigger = page.locator(selector).first
+            if not trigger.is_visible(timeout=800):
+                continue
+
+            trigger.click()
+            time.sleep(0.5)
+            for option in page.locator('[role="option"]').all():
+                try:
+                    label = option.inner_text(timeout=500).strip()
+                except Exception:
+                    continue
+                lowered = label.lower()
+                if not label or "new organization" in lowered or "新组织" in label:
+                    continue
+                option.click()
+                logger.info("[Codex] 已切换到已有 API organization: %s", label)
+                time.sleep(0.5)
+                return True
+
+            logger.warning("[Codex] API organization 下拉中未找到可用的已有组织，保留当前选择")
+            return False
+        except Exception:
+            continue
+
+    return False
+
+
+_CHOOSE_ACCOUNT_PAGE_HINTS = (
+    "choose an account",
+    "select an account",
+    "continue as",
+    "choose a chatgpt account",
+    "选择一个账号",
+    "选择账号",
+)
+_CHOOSE_ACCOUNT_IGNORE_LABELS = {
+    "choose an account",
+    "select an account",
+    "choose a chatgpt account",
+    "continue as",
+    "continue",
+    "继续",
+    "allow",
+    "log in",
+    "cancel",
+    "back",
+    "terms of use",
+    "privacy policy",
+}
+_CHOOSE_ACCOUNT_IGNORE_SUBSTRINGS = (
+    "terms of use",
+    "privacy policy",
+    "continue with",
+)
+
+
+def _is_choose_account_page(page) -> bool:
+    url = (getattr(page, "url", "") or "").lower()
+    if "choose-an-account" in url:
+        return True
+
+    try:
+        body = page.locator("body").inner_text(timeout=1200).lower()
+    except Exception:
+        body = ""
+
+    return any(hint in body for hint in _CHOOSE_ACCOUNT_PAGE_HINTS)
+
+
+def _is_choose_account_ignored_label(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if lowered in _CHOOSE_ACCOUNT_IGNORE_LABELS:
+        return True
+    return any(token in lowered for token in _CHOOSE_ACCOUNT_IGNORE_SUBSTRINGS)
+
+
+def _click_oauth_locator(loc) -> bool:
+    try:
+        loc.click(timeout=3000)
+        return True
+    except Exception:
+        try:
+            loc.click(force=True)
+            return True
+        except Exception:
+            return False
+
+
+def _choose_account_label_candidates(page):
+    if not _is_choose_account_page(page):
+        return []
+
+    selectors = (
+        "button",
+        "a",
+        '[role="button"]',
+        '[role="option"]',
+        '[aria-selected="true"]',
+        '[aria-selected="false"]',
+        "[data-state]",
+        "li",
+        "label",
+        "div",
+    )
+    seen = set()
+    candidates = []
+    for selector in selectors:
+        try:
+            for loc in page.locator(selector).all():
+                try:
+                    if not loc.is_visible(timeout=100):
+                        continue
+                    text = re.sub(r"\s+", " ", loc.inner_text(timeout=200)).strip()
+                except Exception:
+                    continue
+                lowered = text.lower()
+                if not text or lowered in seen or len(text) > 160 or _is_choose_account_ignored_label(lowered):
+                    continue
+                seen.add(lowered)
+                candidates.append((text, loc))
+        except Exception:
+            continue
+    return candidates
+
+
+def _select_oauth_account(page, email: str | None) -> bool:
+    preferred_email = str(email or "").strip().lower()
+    if not preferred_email:
+        return False
+    local_part = preferred_email.split("@", 1)[0] if "@" in preferred_email else preferred_email
+
+    for text, loc in _choose_account_label_candidates(page):
+        lowered = text.strip().lower()
+        if preferred_email not in lowered and (not local_part or local_part not in lowered):
+            continue
+        if not _click_oauth_locator(loc):
+            continue
+        logger.info("[Codex] 选择 OAuth 账号: %s", text)
+        time.sleep(2)
+        try:
+            confirm = page.locator(
+                'button:has-text("Continue"), button:has-text("继续"), button:has-text("Allow")'
+            ).first
+            if confirm.is_visible(timeout=800):
+                confirm.click()
+                logger.info("[Codex] 已确认 OAuth 账号选择")
+                time.sleep(3)
+        except Exception:
+            pass
+        return True
+
+    for selector in (
+        f'text="{preferred_email}"',
+        f"text=/{re.escape(preferred_email)}/i",
+    ):
+        try:
+            loc = page.locator(selector).first
+            if not loc.is_visible(timeout=500):
+                continue
+            if not _click_oauth_locator(loc):
+                continue
+            logger.info("[Codex] 选择 OAuth 账号: %s", preferred_email)
+            time.sleep(2)
+            return True
+        except Exception:
+            continue
+
+    return False
+
+
+def _select_choose_account(page, email: str | None) -> bool:
+    return _select_oauth_account(page, email)
+
+
+def _oauth_page_has_terminal_error(page) -> bool:
+    body_excerpt = _page_excerpt(page, limit=400).lower()
+    return (
+        "no_valid_organizations" in body_excerpt
+        or "an error occurred during authentication" in body_excerpt
+        or "operation timed out" in body_excerpt
+        or "unsupported_country_region_territory" in body_excerpt
+        or "country, region, or territory not supported" in body_excerpt
+    )
+
+
+def _recover_oauth_timeout_page(page) -> bool:
+    body_excerpt = _page_excerpt(page, limit=400).lower()
+    if "operation timed out" not in body_excerpt:
+        return False
+
+    for selector in (
+        'button:has-text("Try again")',
+        '[role="button"]:has-text("Try again")',
+        'a:has-text("Try again")',
+        'button:has-text("Retry")',
+    ):
+        try:
+            btn = page.locator(selector).first
+            if not btn.is_visible(timeout=800):
+                continue
+            logger.info("[Codex] 命中 OAuth 超时错误页，尝试点击 Try again 继续当前流程...")
+            btn.click()
+            time.sleep(3)
+            return True
+        except Exception:
+            continue
+
+    return False
+
+
+def _recover_oauth_no_valid_organizations_page(page) -> bool:
+    body_excerpt = _page_excerpt(page, limit=500).lower()
+    if "no_valid_organizations" not in body_excerpt and "no valid organizations" not in body_excerpt:
+        return False
+
+    for selector in (
+        'button:has-text("Try again")',
+        '[role="button"]:has-text("Try again")',
+        'a:has-text("Try again")',
+        'button:has-text("Retry")',
+        '[role="button"]:has-text("Retry")',
+    ):
+        try:
+            btn = page.locator(selector).first
+            if not btn.is_visible(timeout=800):
+                continue
+            logger.info("[Codex] 命中 no_valid_organizations 错误页，尝试点击 Try again 继续当前 OAuth 流程...")
+            btn.click()
+            time.sleep(4)
+            return True
+        except Exception:
+            continue
+
+    return False
+
+
+def _is_oauth_login_challenge_page(page, trace_events=None) -> bool:
+    try:
+        url = (page.url or "").lower()
+    except Exception:
+        url = ""
+    if "/api/accounts/login" in url or "auth.openai.com/log-in" in url:
+        return True
+    return bool(trace_events and _oauth_trace_has_login_challenge(trace_events) and "/oauth" not in url)
+
+
+def _is_login_page_url(url: str | None) -> bool:
+    url = (url or "").lower()
+    return "/api/accounts/login" in url or "auth.openai.com/log-in" in url or "log-in-or-create-account" in url
+
+
+def _wait_for_oauth_challenge_progress(page, timeout=20) -> bool:
+    deadline = time.time() + timeout
+    last_url = ""
+    while time.time() < deadline:
+        try:
+            url = page.url or ""
+            last_url = url
+        except Exception:
+            url = ""
+
+        lower_url = url.lower()
+        if f"localhost:{CODEX_CALLBACK_PORT}/auth/callback" in lower_url:
+            return True
+        if (
+            lower_url
+            and "/api/accounts/login" not in lower_url
+            and "auth.openai.com/log-in" not in lower_url
+            and "email-verification" not in lower_url
+        ):
+            if any(marker in lower_url for marker in ("/oauth", "consent", "organization", "choose-an-account")):
+                return True
+
+        try:
+            if _is_otp_input_visible(page, timeout=300):
+                return False
+        except Exception:
+            pass
+
+        time.sleep(0.5)
+
+    logger.info("[Codex] OAuth login challenge progress wait timed out, last_url=%s", last_url)
+    return False
+
+
+def _complete_oauth_login_challenge(page, email, password, mail_client, min_email_id, used_email_ids) -> bool:
+    acted = False
+
+    try:
+        for attempt in range(2):
+            email_input = page.locator('input[name="email"], input[id="email-input"], input[id="email"]').first
+            if not email_input.is_visible(timeout=3000):
+                break
+            email_input.fill(email)
+            acted = True
+            time.sleep(0.5)
+            _click_primary_auth_button(page, email_input, ["Continue", "继续"])
+            time.sleep(3)
+            if not _is_google_redirect(page):
+                break
+            _screenshot(page, f"codex_login_challenge_google_email_{attempt + 1}.png")
+            logger.warning("[Codex] OAuth login challenge email step redirected to Google; retrying")
+            page.go_back(wait_until="domcontentloaded", timeout=30000)
+            time.sleep(2)
+    except Exception:
+        pass
+
+    try:
+        for attempt in range(2):
+            pwd_input = page.locator('input[name="password"], input[type="password"]').first
+            if not pwd_input.is_visible(timeout=3000):
+                break
+            acted = True
+            if password:
+                pwd_input.fill(password)
+                time.sleep(0.5)
+                _click_primary_auth_button(page, pwd_input, ["Continue", "继续", "Log in"])
+            else:
+                otp_btn = page.locator(
+                    'button:has-text("一次性验证码"), button:has-text("one-time"), button:has-text("email login")'
+                ).first
+                if otp_btn.is_visible(timeout=3000):
+                    otp_btn.click()
+                else:
+                    _click_primary_auth_button(page, pwd_input, ["Continue", "继续", "Log in"])
+            time.sleep(5)
+            if not _is_google_redirect(page):
+                break
+            _screenshot(page, f"codex_login_challenge_google_password_{attempt + 1}.png")
+            logger.warning("[Codex] OAuth login challenge password step redirected to Google; retrying")
+            page.go_back(wait_until="domcontentloaded", timeout=30000)
+            time.sleep(2)
+    except Exception:
+        pass
+
+    try:
+        if _is_otp_input_visible(page, timeout=3000):
+            if not mail_client:
+                logger.warning("[Codex] OAuth login challenge needs OTP but no mail_client is available")
+                return acted
+            submit_status = _resolve_email_verification(
+                page,
+                mail_client=mail_client,
+                email=email,
+                after_email_id=min_email_id,
+                used_email_ids=used_email_ids,
+                wait_log="[Codex] OAuth login challenge needs OTP, waiting for emailId > %d",
+                wait_timeout=90,
+            )
+            if submit_status != "no_code":
+                acted = True
+                _wait_for_oauth_challenge_progress(page, timeout=20)
+    except Exception:
+        pass
+
+    if "about-you" in (page.url or ""):
+        _complete_oauth_about_you(page)
+        acted = True
+
+    return acted
+
+
 def _is_google_redirect(page):
     url = (page.url or "").lower()
     if "accounts.google.com" in url:
@@ -662,6 +1446,7 @@ _OTP_INPUT_SELECTORS = (
     'input[name="code"], input[inputmode="numeric"], input[autocomplete="one-time-code"], '
     'input[placeholder*="验证码"], input[placeholder*="code" i]'
 )
+_OTP_SINGLE_INPUT_SELECTORS = 'input[maxlength="1"], input[data-input-otp], input[aria-label*="digit" i]'
 _OTP_INVALID_HINTS = (
     "invalid code",
     "incorrect code",
@@ -693,6 +1478,25 @@ def _detect_otp_error(page):
     return None
 
 
+def _is_otp_progress_url(url: str | None) -> bool:
+    url = (url or "").lower()
+    if not url:
+        return False
+    if f"localhost:{CODEX_CALLBACK_PORT}/auth/callback" in url:
+        return True
+    return any(
+        marker in url
+        for marker in (
+            "consent",
+            "organization",
+            "choose-an-account",
+            "about-you",
+            "/oauth/oauth2/auth",
+            "/sign-in-with-chatgpt/codex",
+        )
+    ) and "email-verification" not in url
+
+
 def _wait_for_otp_submit_result(page, timeout=12):
     """
     等待验证码提交结果：
@@ -703,6 +1507,11 @@ def _wait_for_otp_submit_result(page, timeout=12):
     deadline = time.time() + timeout
 
     while time.time() < deadline:
+        try:
+            if _is_otp_progress_url(page.url):
+                return "accepted", None
+        except Exception:
+            pass
         err = _detect_otp_error(page)
         if err:
             return "invalid", err
@@ -710,10 +1519,210 @@ def _wait_for_otp_submit_result(page, timeout=12):
             return "accepted", None
         time.sleep(0.5)
 
+    try:
+        if _is_otp_progress_url(page.url):
+            return "accepted", None
+    except Exception:
+        pass
     err = _detect_otp_error(page)
     if err:
         return "invalid", err
     return "pending", None
+
+
+def _visible_otp_slot_inputs(page, timeout=300):
+    try:
+        candidates = page.locator(_OTP_SINGLE_INPUT_SELECTORS).all()
+    except Exception:
+        return []
+
+    visible = []
+    for loc in candidates:
+        try:
+            if loc.is_visible(timeout=timeout):
+                visible.append(loc)
+        except Exception:
+            continue
+    return visible
+
+
+def _fill_otp_code(page, code: str) -> bool:
+    value = str(code or "").strip()
+    if not value:
+        return False
+
+    slot_inputs = _visible_otp_slot_inputs(page, timeout=200)
+    if len(slot_inputs) >= min(4, len(value)):
+        logger.info("[Codex] 检测到 %d 个单字符验证码输入框", len(slot_inputs))
+        for index, char in enumerate(value):
+            if index >= len(slot_inputs):
+                break
+            loc = slot_inputs[index]
+            try:
+                loc.click(force=True)
+            except Exception:
+                pass
+            try:
+                loc.fill("")
+            except Exception:
+                pass
+            try:
+                loc.fill(char)
+            except Exception:
+                try:
+                    loc.type(char, delay=50)
+                except Exception:
+                    try:
+                        page.keyboard.type(char, delay=50)
+                    except Exception:
+                        return False
+            time.sleep(0.1)
+        return True
+
+    try:
+        otp_input = page.locator(_OTP_INPUT_SELECTORS).first
+        if otp_input.is_visible(timeout=2000):
+            otp_input.fill(value)
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def _click_otp_submit_button(page) -> bool:
+    for selector in (
+        'button[type="submit"]',
+        'button:has-text("Continue")',
+        'button:has-text("继续")',
+        'button:has-text("Verify")',
+    ):
+        try:
+            button = page.locator(selector).first
+            if button.is_visible(timeout=800):
+                button.click()
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _poll_mail_verification_code(
+    mail_client,
+    email: str,
+    *,
+    after_email_id: int,
+    used_email_ids: set[int],
+    timeout: int = 120,
+    require_sender: bool = False,
+):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for em in mail_client.search_emails_by_recipient(email, size=5):
+            email_id = em.get("emailId", 0)
+            if email_id <= after_email_id or email_id in used_email_ids:
+                continue
+
+            if require_sender:
+                sender = (em.get("sendEmail") or "").lower()
+                if "openai" not in sender and "chatgpt" not in sender:
+                    continue
+
+            subject = (em.get("subject") or "").lower()
+            if "invited" in subject or "invitation" in subject:
+                continue
+
+            code = mail_client.extract_verification_code(em)
+            if code:
+                return code, email_id
+        time.sleep(3)
+
+    return None, 0
+
+
+def _resolve_email_verification(
+    page,
+    *,
+    mail_client,
+    email: str,
+    after_email_id: int,
+    used_email_ids: set[int],
+    wait_log: str,
+    require_sender: bool = False,
+    wait_timeout: int = 120,
+    submit_timeout: int = 15,
+) -> str:
+    logger.info(wait_log, after_email_id)
+
+    otp, otp_email_id = _poll_mail_verification_code(
+        mail_client,
+        email,
+        after_email_id=after_email_id,
+        used_email_ids=used_email_ids,
+        timeout=wait_timeout,
+        require_sender=require_sender,
+    )
+    if not otp:
+        logger.warning("[Codex] 未获取到验证码")
+        return "no_code"
+
+    logger.info("[Codex] 获取到验证码: %s", otp)
+
+    for submit_attempt in range(1, 3):
+        current_url = (getattr(page, "url", "") or "").lower()
+        if current_url and "email-verification" not in current_url:
+            used_email_ids.add(otp_email_id)
+            return "accepted"
+
+        if not _fill_otp_code(page, otp):
+            if current_url and "email-verification" not in current_url:
+                used_email_ids.add(otp_email_id)
+                return "accepted"
+            if submit_attempt < 2:
+                logger.warning("[Codex] 验证码输入框不可用，准备重试第 %d/2 次", submit_attempt + 1)
+                time.sleep(2)
+                continue
+            used_email_ids.add(otp_email_id)
+            logger.warning("[Codex] 验证码输入框不可用，标记并跳过邮件 %s", otp_email_id)
+            return "input_unavailable"
+
+        time.sleep(0.5)
+        _click_otp_submit_button(page)
+        logger.info("[Codex] 已输入验证码: %s", otp)
+
+        submit_status, submit_detail = _wait_for_otp_submit_result(page, timeout=submit_timeout)
+        if submit_status == "accepted":
+            used_email_ids.add(otp_email_id)
+            return "accepted"
+        if submit_status == "invalid":
+            used_email_ids.add(otp_email_id)
+            detail_suffix = f"，命中提示: {submit_detail}" if submit_detail else ""
+            logger.warning(
+                "[Codex] 验证码邮件 %s（code=%s）被页面判定无效%s，标记并跳过该邮件",
+                otp_email_id,
+                otp,
+                detail_suffix,
+            )
+            return "invalid"
+
+        if submit_attempt < 2:
+            logger.warning(
+                "[Codex] 验证码邮件 %s（code=%s）提交后未确认成功，准备重试第 %d/2 次",
+                otp_email_id,
+                otp,
+                submit_attempt + 1,
+            )
+            time.sleep(2)
+        else:
+            used_email_ids.add(otp_email_id)
+            logger.warning(
+                "[Codex] 验证码邮件 %s（code=%s）提交后仍未确认成功，标记并跳过该邮件",
+                otp_email_id,
+                otp,
+            )
+            return "pending"
+
+    return "pending"
 
 
 def _typewrite_credential(page, locator, value, *, delay_ms=50, post_sleep=1.0):
@@ -853,42 +1862,20 @@ def _perform_fresh_relogin_in_context(context, email, password, mail_client, *, 
 
         # === 可能 OTP ===
         try:
-            ci = page.locator(_OTP_INPUT_SELECTORS).first
-            if ci.is_visible(timeout=5000) and mail_client:
-                logger.info("[Codex] fresh re-login: 需要 OTP,等待 emailId > %d 的新邮件...", fresh_email_id_before)
-                otp = None
-                otp_email_id = 0
-                t0 = time.time()
-                while time.time() - t0 < 120:
-                    for em in mail_client.search_emails_by_recipient(email, size=5):
-                        eid = em.get("emailId", 0)
-                        if eid <= fresh_email_id_before or eid in used_email_ids:
-                            continue
-                        sender = (em.get("sendEmail") or "").lower()
-                        if "openai" not in sender and "chatgpt" not in sender:
-                            continue
-                        subj = (em.get("subject") or "").lower()
-                        if "invited" in subj or "invitation" in subj:
-                            continue
-                        otp = mail_client.extract_verification_code(em)
-                        if otp:
-                            otp_email_id = eid
-                            break
-                    if otp:
-                        break
-                    time.sleep(3)
-                if otp:
-                    used_email_ids.add(otp_email_id)
-                    logger.info("[Codex] fresh re-login: 获取到 OTP %s", otp)
-                    ci.fill(otp)
-                    time.sleep(0.5)
-                    page.locator(
-                        'button[type="submit"], button:has-text("Continue"), button:has-text("继续")'
-                    ).first.click()
-                    time.sleep(5)
-                    _screenshot(page, "codex_relogin_04_after_otp.png")
-                else:
-                    logger.warning("[Codex] fresh re-login: 未获取到 OTP")
+            if _is_otp_input_visible(page, timeout=5000) and mail_client:
+                _resolve_email_verification(
+                    page,
+                    mail_client=mail_client,
+                    email=email,
+                    after_email_id=fresh_email_id_before,
+                    used_email_ids=used_email_ids,
+                    wait_log="[Codex] fresh re-login: 需要 OTP,等待 emailId > %d 的新邮件...",
+                    require_sender=True,
+                )
+                time.sleep(5)
+                _screenshot(page, "codex_relogin_04_after_otp.png")
+            elif _is_otp_input_visible(page, timeout=500):
+                logger.warning("[Codex] fresh re-login: 需要 OTP 但无 mail_client")
         except Exception:
             pass
 
@@ -1033,9 +2020,11 @@ def login_codex_via_browser(
     password,
     mail_client=None,
     *,
+    return_result=False,
     use_personal=False,
     chatgpt_session_token=None,
     prefetched_personal_uuid=None,
+    pre_signed_in_cookies: list | None = None,
     signup_profile: SignupProfile | None = None,
     playwright_proxy_url: str | None = None,
 ):
@@ -1050,9 +2039,12 @@ def login_codex_via_browser(
     prefetched_personal_uuid: Round 11 V8 — accounts.json 持久化的 personal_workspace_id;
                               非空时直接拼到 OAuth `auth_url` 的 allowed_workspace_id 参数,
                               省一次 silent step-0 内的 POST /accounts/personal。
+    pre_signed_in_cookies: 直接注册后传入的已登录 chatgpt.com/auth.openai.com cookies。
+                           提供时优先尝试 ChatGPT session fallback，避免新号二次 OAuth 登录挑战。
     signup_profile: 注册 about-you 使用过的身份快照；OAuth about-you 必须复用它。
     返回 auth bundle: {access_token, refresh_token, id_token, account_id, email, plan_type,
                        personal_workspace_id}
+    return_result=True 时返回 {ok, bundle, error_type, error_detail, retryable}。
 
     Round 11 五轮 Option A — 两阶段 personal OAuth:
       阶段 1(快路径):有 chatgpt_session_token → silent step-0 双域注入 + NextAuth refresh,
@@ -1125,6 +2117,30 @@ def login_codex_via_browser(
             launch_kwargs = get_playwright_launch_options()
         browser = p.chromium.launch(**launch_kwargs)
         context = browser.new_context(**get_playwright_context_options())
+
+        if pre_signed_in_cookies:
+            try:
+                context.add_cookies(pre_signed_in_cookies)
+                logger.info(
+                    "[Codex] 已注入 %d 个 session cookie，优先尝试 ChatGPT session fallback",
+                    len(pre_signed_in_cookies),
+                )
+            except Exception as exc:
+                logger.warning("[Codex] 注入 session cookie 失败，回退到完整登录: %s", exc)
+                pre_signed_in_cookies = None
+
+        if pre_signed_in_cookies and not use_personal:
+            session_fallback_bundle = _fetch_team_session_bundle_from_context(
+                context,
+                email,
+                chatgpt_account_id,
+                stage_label="pre-oauth",
+            )
+            if session_fallback_bundle:
+                close_playwright_objects(context=context, browser=browser, logger=logger, label="codex-session-fallback")
+                if return_result:
+                    return _oauth_result_from_bundle(session_fallback_bundle)
+                return session_fallback_bundle
 
         # Round 11 四轮 — Personal 模式 session_token 注入(silent step-0):
         # 实测刚踢出 Team 的新号在 OAuth /log-in 页 fill email 后 Continue 按钮变灰禁用,
@@ -1378,30 +2394,16 @@ def login_codex_via_browser(
 
             # 可能需要邮箱验证码
             try:
-                ci = _page.locator('input[name="code"]').first
-                if ci.is_visible(timeout=5000) and mail_client:
-                    logger.info("[Codex] ChatGPT 登录需要验证码，等待 emailId > %d 的新邮件...", _email_id_before_login)
-                    otp = None
-                    otp_email_id = 0
-                    t0 = time.time()
-                    while time.time() - t0 < 120:
-                        for em in mail_client.search_emails_by_recipient(email, size=5):
-                            email_id = em.get("emailId", 0)
-                            if email_id <= _email_id_before_login or email_id in _used_email_ids:
-                                continue
-                            otp = mail_client.extract_verification_code(em)
-                            if otp:
-                                otp_email_id = email_id
-                                break
-                        if otp:
-                            break
-                        time.sleep(3)
-                    if otp:
-                        _used_email_ids.add(otp_email_id)
-                        ci.fill(otp)
-                        time.sleep(0.5)
-                        _page.locator('button[type="submit"]').first.click()
-                        time.sleep(5)
+                if mail_client and _is_otp_input_visible(_page, timeout=5000):
+                    _resolve_email_verification(
+                        _page,
+                        mail_client=mail_client,
+                        email=email,
+                        after_email_id=_email_id_before_login,
+                        used_email_ids=_used_email_ids,
+                        wait_log="[Codex] ChatGPT 登录需要验证码，等待 emailId > %d 的新邮件...",
+                    )
+                    time.sleep(5)
             except Exception:
                 pass
 
@@ -1673,6 +2675,19 @@ def login_codex_via_browser(
 
             _screenshot(page, f"codex_04_step{step + 1}_before.png")
 
+            try:
+                if _is_choose_account_page(page):
+                    _screenshot(page, f"codex_04_choose_account_{step + 1}_before.png")
+                    logger.info("[Codex] 检测到账号选择页 (step %d)，尝试选择: %s", step + 1, email)
+                    selected = _select_oauth_account(page, email)
+                    _screenshot(page, f"codex_04_choose_account_{step + 1}_after.png")
+                    if selected and not _is_choose_account_page(page):
+                        continue
+                    if not selected:
+                        logger.warning("[Codex] 无法自动选择 OAuth 账号: %s (step %d)", email, step + 1)
+            except Exception:
+                pass
+
             # 在任何页面中，如果有 workspace/组织选择，先选 Team（personal 模式下选个人）
             try:
                 # Round 11 — 与 cnitlrt/AutoTeam upstream codex_auth.py:772-815 对齐:
@@ -1880,90 +2895,18 @@ def login_codex_via_browser(
 
             # 处理邮箱验证码页面（可能在 consent 流程中出现）
             try:
-                otp_input = page.locator(_OTP_INPUT_SELECTORS).first
-                if otp_input.is_visible(timeout=2000) and mail_client:
-                    logger.info(
-                        "[Codex] 需要邮箱验证码 (step %d)，等待 emailId > %d 的新邮件...",
-                        step + 1,
-                        _email_id_before_login,
+                if _is_otp_input_visible(page, timeout=2000) and mail_client:
+                    submit_status = _resolve_email_verification(
+                        page,
+                        mail_client=mail_client,
+                        email=email,
+                        after_email_id=_email_id_before_login,
+                        used_email_ids=_used_email_ids,
+                        wait_log=f"[Codex] 需要邮箱验证码 (step {step + 1})，等待 emailId > %d 的新邮件...",
+                        require_sender=True,
                     )
-                    otp = None
-                    otp_email_id = 0
-                    page_left_code = False
-                    t0 = time.time()
-                    while time.time() - t0 < 120:
-                        if not _is_otp_input_visible(page, timeout=300):
-                            page_left_code = True
-                            logger.info("[Codex] 验证码页已退出，继续后续授权流程")
-                            break
-                        for em in mail_client.search_emails_by_recipient(email, size=5):
-                            # 只接受比快照更新的邮件
-                            email_id = em.get("emailId", 0)
-                            if email_id <= _email_id_before_login or email_id in _used_email_ids:
-                                continue
-                            sender = (em.get("sendEmail") or "").lower()
-                            if "openai" not in sender and "chatgpt" not in sender:
-                                continue
-                            subj = (em.get("subject") or "").lower()
-                            if "invited" in subj or "invitation" in subj:
-                                continue
-                            otp = mail_client.extract_verification_code(em)
-                            if otp:
-                                otp_email_id = email_id
-                                break
-                        if otp:
-                            break
-                        time.sleep(3)
-                    if otp:
-                        submit_ok = False
-                        for submit_attempt in range(1, 3):
-                            otp_input = page.locator(_OTP_INPUT_SELECTORS).first
-                            if not otp_input.is_visible(timeout=2000):
-                                submit_ok = True
-                                break
-
-                            otp_input.fill(otp)
-                            time.sleep(0.5)
-                            page.locator(
-                                'button[type="submit"], button:has-text("Continue"), button:has-text("继续")'
-                            ).first.click()
-                            logger.info("[Codex] 已输入验证码: %s", otp)
-
-                            submit_status, submit_detail = _wait_for_otp_submit_result(page, timeout=12)
-                            if submit_status == "accepted":
-                                submit_ok = True
-                                break
-                            if submit_status == "invalid":
-                                _used_email_ids.add(otp_email_id)
-                                detail_suffix = f"，命中提示: {submit_detail}" if submit_detail else ""
-                                logger.warning(
-                                    "[Codex] 验证码邮件 %s（code=%s）被页面判定无效%s，标记并跳过该邮件",
-                                    otp_email_id,
-                                    otp,
-                                    detail_suffix,
-                                )
-                                break
-
-                            if submit_attempt < 2:
-                                logger.warning(
-                                    "[Codex] 验证码邮件 %s（code=%s）提交后未确认成功，准备重试第 %d/2 次",
-                                    otp_email_id,
-                                    otp,
-                                    submit_attempt + 1,
-                                )
-                                time.sleep(2)
-                            else:
-                                _used_email_ids.add(otp_email_id)
-                                logger.warning(
-                                    "[Codex] 验证码邮件 %s（code=%s）提交后仍未确认成功，标记并跳过该邮件",
-                                    otp_email_id,
-                                    otp,
-                                )
-
-                        if submit_ok:
-                            _used_email_ids.add(otp_email_id)
-                        continue
-                    if page_left_code:
+                    if submit_status == "accepted":
+                        logger.info("[Codex] 验证码页已退出，继续后续授权流程")
                         continue
             except Exception:
                 pass
@@ -2309,6 +3252,8 @@ def login_codex_via_browser(
 
             if personal_uuid:
                 stage2_bundle["personal_workspace_id"] = personal_uuid
+            if return_result:
+                return _oauth_result_from_bundle(stage2_bundle)
             return stage2_bundle
 
         # 阶段 1 通过(非 personal 或 plan == free) — 走原退出路径
@@ -2316,9 +3261,25 @@ def login_codex_via_browser(
 
     if not auth_code:
         logger.error("[Codex] OAuth 登录失败: 未获取到 authorization code")
+        if return_result:
+            return {
+                "ok": False,
+                "bundle": None,
+                "error_type": "auth_code_missing",
+                "error_detail": "未获取到 authorization code",
+                "retryable": True,
+            }
         return None
 
     if not stage1_bundle:
+        if return_result:
+            return {
+                "ok": False,
+                "bundle": None,
+                "error_type": "token_exchange_failed",
+                "error_detail": "Token 交换失败",
+                "retryable": True,
+            }
         return None
 
     # Personal 模式强校验 plan_type:当子号还挂在 Team workspace(OpenAI 后端 kick 同步延迟 /
@@ -2342,10 +3303,20 @@ def login_codex_via_browser(
                 plan or "unknown",
                 stage1_bundle.get("account_id"),
             )
+            if return_result:
+                return {
+                    "ok": False,
+                    "bundle": None,
+                    "error_type": "non_free_plan",
+                    "error_detail": f"personal OAuth plan={plan or 'unknown'}",
+                    "retryable": True,
+                }
             return None
 
     if personal_uuid:
         stage1_bundle["personal_workspace_id"] = personal_uuid
+    if return_result:
+        return _oauth_result_from_bundle(stage1_bundle)
     return stage1_bundle
 
 
@@ -2646,6 +3617,8 @@ class SessionCodexAuthFlow:
             if step == "password_required":
                 if self._switch_password_to_otp():
                     continue
+                if self._auto_fill_password():
+                    continue
                 return {
                     "step": "unsupported_password",
                     "detail": "主号 Codex 当前停留在密码页，且未找到一次性验证码入口",
@@ -2738,21 +3711,34 @@ class SessionCodexAuthFlow:
         self.page = None
 
 
-class MainCodexSyncFlow(SessionCodexAuthFlow):
+class MainCodexLoginFlow(SessionCodexAuthFlow):
     def __init__(self):
+        from autoteam.admin_state import get_admin_password
+
         super().__init__(
             email=get_admin_email(),
             session_token=get_admin_session_token(),
             account_id=get_chatgpt_account_id(),
             workspace_name=get_chatgpt_workspace_name(),
-            password="",
+            password=get_admin_password(),
             password_callback=None,
             auth_file_callback=save_main_auth_file,
         )
 
     def complete(self):
         info = super().complete()
+        return {
+            "email": info.get("email"),
+            "auth_file": info.get("auth_file"),
+            "plan_type": info.get("plan_type"),
+        }
+
+
+class MainCodexSyncFlow(MainCodexLoginFlow):
+    def complete(self):
+        info = super().complete()
         from autoteam.sync_targets import sync_main_codex_to_configured_targets as sync_main_codex_to_cpa
+
         sync_main_codex_to_cpa(info["auth_file"])
         return {
             "email": info.get("email"),

@@ -32,6 +32,7 @@ STATUS_STANDBY = "standby"  # 已移出 team，等待额度恢复
 STATUS_PENDING = "pending"  # 已邀请，等待注册完成
 STATUS_PERSONAL = "personal"  # 已主动退出 team，走个人号 Codex OAuth，不再参与 Team 轮转
 STATUS_AUTH_INVALID = "auth_invalid"  # auth_file token 已不可用(401/403),待 reconcile 清理或重登
+STATUS_AUTH_PENDING = STATUS_AUTH_INVALID  # 向后兼容 target 命名，落盘值仍为 auth_invalid
 STATUS_ORPHAN = "orphan"  # 在 workspace 里占着席位,但本地没 auth_file(残废,待人工介入或兜底 kick)
 # Round 9 SPEC v2.0 — 母号 cancel_at_period_end 期内子号过渡态:
 # 仍持有有效 auth_file + token,wham 200 plan=team 可继续消耗配额;
@@ -90,6 +91,15 @@ def is_account_disabled(acc: dict | None) -> bool:
 def _normalize_account(acc: dict) -> dict:
     normalized = dict(acc or {})
     normalized["disabled"] = bool(normalized.get("disabled", False))
+    normalized["mail_provider"] = str(normalized.get("mail_provider") or "").strip().lower()
+    mail_account_id = normalized.get("mail_account_id")
+    normalized["mail_account_id"] = (
+        str(mail_account_id).strip() if mail_account_id is not None and str(mail_account_id).strip() else None
+    )
+    service_id = normalized.get("mail_service_id")
+    normalized["mail_service_id"] = (
+        str(service_id).strip() if service_id is not None and str(service_id).strip() else None
+    )
     return normalized
 
 
@@ -119,7 +129,17 @@ def find_account(accounts, email):
     return None
 
 
-def add_account(email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNOWN, workspace_account_id=None):
+def add_account(
+    email,
+    password,
+    cloudmail_account_id=None,
+    seat_type=SEAT_UNKNOWN,
+    workspace_account_id=None,
+    *,
+    mail_provider=None,
+    mail_account_id=None,
+    mail_service_id=None,
+):
     """添加新账号。
 
     seat_type 取值见 SEAT_CHATGPT / SEAT_CODEX / SEAT_UNKNOWN。
@@ -137,6 +157,12 @@ def add_account(email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNO
             patch["seat_type"] = seat_type
         if workspace_account_id and not existing.get("workspace_account_id"):
             patch["workspace_account_id"] = workspace_account_id
+        if mail_provider and not existing.get("mail_provider"):
+            patch["mail_provider"] = str(mail_provider).strip().lower()
+        if mail_account_id is not None and not existing.get("mail_account_id"):
+            patch["mail_account_id"] = str(mail_account_id).strip()
+        if mail_service_id and not existing.get("mail_service_id"):
+            patch["mail_service_id"] = str(mail_service_id).strip()
         if patch:
             update_account(email, **patch)
         return
@@ -151,6 +177,17 @@ def add_account(email, password, cloudmail_account_id=None, seat_type=SEAT_UNKNO
                 "email": email,
                 "password": password,
                 "cloudmail_account_id": cloudmail_account_id,
+                "mail_provider": str(mail_provider or "").strip().lower(),
+                "mail_account_id": (
+                    str(mail_account_id).strip()
+                    if mail_account_id is not None and str(mail_account_id).strip()
+                    else None
+                ),
+                "mail_service_id": (
+                    str(mail_service_id).strip()
+                    if mail_service_id is not None and str(mail_service_id).strip()
+                    else None
+                ),
                 "status": STATUS_PENDING,
                 "seat_type": seat_type or SEAT_UNKNOWN,
                 "workspace_account_id": workspace_account_id,  # 邀请时所在的母号 workspace ID,母号切换检测用

@@ -33,6 +33,7 @@ from autoteam.account_ops import delete_managed_account, fetch_team_state
 from autoteam.accounts import (
     STATUS_ACTIVE,
     STATUS_AUTH_INVALID,
+    STATUS_AUTH_PENDING,
     STATUS_EXHAUSTED,
     STATUS_ORPHAN,
     STATUS_PENDING,
@@ -175,6 +176,26 @@ def _auto_reuse_skip_reason(acc: dict | None) -> str | None:
 
 # 失败类型常量（上游 `.upstream/manager.py:96`）。Hard failure → 立即暂停 + 释放席位。
 AUTH_REPAIR_HARD_FAILURE_TYPES = frozenset({"human_verification"})
+AUTH_REPAIR_SINGLE_ATTEMPT_FAILURE_TYPES = frozenset(
+    {
+        "add_phone",
+        "human_verification",
+        "email_verification",
+        "login_state_lost",
+        "account_selection",
+        "no_valid_organizations",
+    }
+)
+AUTH_REPAIR_RELEASE_AFTER_RETRY_TYPES = frozenset({"email_verification"})
+AUTH_REPAIR_RELEASE_TEAM_BLOCKER_TYPES = frozenset(
+    {
+        "login_state_lost",
+        "account_selection",
+        "no_valid_organizations",
+        "missing_auth_file",
+        "auth_error_discard",
+    }
+)
 
 
 def _chatgpt_session_ready(chatgpt_api) -> bool:
@@ -232,7 +253,86 @@ def _has_auth_file(acc: dict | None) -> bool:
     """本地 acc 是否有可用 auth_file(上游 `.upstream/manager.py:153`)。"""
     acc = acc or {}
     auth_file = (acc.get("auth_file") or "").strip()
-    return bool(auth_file) and Path(auth_file).exists()
+    return bool(auth_file) and _resolve_auth_file_path(auth_file).exists()
+
+
+def get_mail_domain() -> str:
+    """Return the configured mail domain used by registration/auth repair flows."""
+    from autoteam.runtime_config import get_register_domain
+
+    return get_register_domain()
+
+
+def get_mail_provider_name() -> str:
+    """Return the configured mail provider name used by registration/auth repair flows."""
+    return (os.environ.get("MAIL_PROVIDER") or "cf_temp_email").strip().lower()
+
+
+def _mail_provider_name_for_client(mail_client) -> str:
+    provider_name = str(getattr(mail_client, "provider_name", "") or "").strip().lower()
+    if not provider_name:
+        try:
+            current = getattr(mail_client, "current_provider_name", None)
+            if callable(current):
+                provider_name = str(current() or "").strip().lower()
+        except Exception:
+            provider_name = ""
+    if provider_name in {"maillab", "addy_io", "simplelogin"}:
+        return provider_name
+    if provider_name in {"cf_temp_email", "cloudflare_temp_email", "cloudmail"}:
+        return "cf_temp_email"
+    return get_mail_provider_name()
+
+
+def _auth_search_dirs() -> tuple[Path, ...]:
+    """Candidate auth directories for host and container path compatibility."""
+    candidates: list[Path] = []
+    try:
+        from autoteam.auth_storage import AUTH_DIR
+
+        candidates.append(AUTH_DIR)
+    except Exception:
+        pass
+
+    project_root = Path(__file__).resolve().parents[2]
+    candidates.extend((project_root / "data" / "auths", project_root / "auths"))
+
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in candidates:
+        key = str(path)
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return tuple(unique)
+
+
+def _resolve_auth_file_path(value: str | None) -> Path:
+    """Resolve auth paths saved as host paths, `/app/...`, `data/auths/...`, or bare names."""
+    text = (value or "").strip()
+    if not text:
+        return Path("")
+
+    direct = Path(text)
+    if direct.exists():
+        return direct
+
+    project_root = Path(__file__).resolve().parents[2]
+    candidates: list[Path] = []
+    normalized = text.replace("\\", "/")
+    if normalized.startswith("/app/"):
+        candidates.append(project_root / normalized.removeprefix("/app/"))
+    elif normalized.startswith("data/") or normalized.startswith("auths/"):
+        candidates.append(project_root / normalized)
+
+    name = Path(normalized).name
+    if name:
+        candidates.extend(auth_dir / name for auth_dir in _auth_search_dirs())
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return direct
 
 
 def _has_account_mail_binding(acc: dict | None) -> bool:
@@ -253,6 +353,23 @@ def _is_protected_local_credential_seat(acc: dict | None) -> bool:
     if acc.get("status") in (STATUS_STANDBY, STATUS_AUTH_INVALID):
         return True
     return not _has_account_mail_binding(acc)
+
+
+def _is_auth_repair_pending_status(status: str | None) -> bool:
+    """Accept current persisted auth-invalid alias and legacy target auth_pending literal."""
+    return status in {STATUS_AUTH_PENDING, "auth_pending"}
+
+
+def _can_attempt_auth_repair(acc: dict | None, mail_domain_suffix: str = "") -> bool:
+    acc = acc or {}
+    if (
+        bool(acc.get("mail_provider"))
+        or acc.get("mail_account_id") is not None
+        or acc.get("cloudmail_account_id") is not None
+    ):
+        return True
+    email = _normalized_email(acc.get("email"))
+    return bool(mail_domain_suffix and mail_domain_suffix in email)
 
 
 def _sync_ready_credential_to_targets(email: str, auth_file: str | None, *, stage_label: str) -> dict:
@@ -312,6 +429,25 @@ def _release_account_ipv6_proxy(email: str | None) -> None:
             logger.info("[IPv6Pool] released account proxy: %s", email)
     except Exception as exc:
         logger.warning("[IPv6Pool] release failed for %s: %s", email, exc)
+
+
+def _discard_auth_repair_failed_account_record(
+    email: str,
+    reason: str,
+    *,
+    status: str = STATUS_STANDBY,
+    now: float | None = None,
+) -> None:
+    """Mark a released auth-repair failure as non-reusable while keeping local evidence."""
+    update_account(
+        email,
+        status=status,
+        disabled=True,
+        reuse_disabled=True,
+        retired_at=time.time() if now is None else now,
+        retired_reason=reason,
+    )
+    _release_account_ipv6_proxy(email)
 
 
 def _attach_account_proxy_to_bundle(email: str | None, bundle: dict | None, proxy_url: str | None = None) -> None:
@@ -559,7 +695,12 @@ def _auth_repair_error_label(error_type: str | None) -> str:
         "human_verification": "人机验证",
         "email_verification": "邮箱验证码页卡住",
         "workspace_selection": "workspace 选择未完成",
+        "account_selection": "账号选择页未完成",
         "login_state_lost": "登录态丢失",
+        "missing_auth_file": "缺少本地 Codex 凭证",
+        "auth_error_discard": "认证失效后一次性丢弃",
+        "unsupported_region": "出口地区不被 OAuth 接受",
+        "oauth_timeout": "OAuth 授权页超时",
         "site_unavailable": "站点不可用/代理异常",
         "token_exchange_failed": "token 交换失败",
         "non_team_plan": "未进入 Team workspace",
@@ -568,6 +709,17 @@ def _auth_repair_error_label(error_type: str | None) -> str:
         "exception": "登录异常",
     }
     return mapping.get(error_type or "", error_type or "未知错误")
+
+
+def _oauth_retry_delay_seconds(error_type: str | None) -> int:
+    """Short same-round retry delays for transient OAuth organization/region pages."""
+    mapping = {
+        "unsupported_region": 20,
+        "account_selection": 6,
+        "no_valid_organizations": 10,
+        "oauth_timeout": 8,
+    }
+    return mapping.get(str(error_type or "").strip(), 0)
 
 
 def _auth_repair_state_suffix(state: dict | None) -> str:
@@ -676,6 +828,13 @@ def _record_auth_repair_failure(
     error_detail = error_detail or _auth_repair_error_label(error_type)
     retry_delays = _auth_repair_retry_delays()
     release_team_seat = False
+    missing_auth_file = not _has_auth_file(acc)
+    team_blocking_status = acc.get("status") in (STATUS_STANDBY, STATUS_AUTH_INVALID)
+    protected_local_credential = _is_protected_local_credential_seat(acc)
+    try:
+        from autoteam.config import ROTATE_SKIP_REUSE as discard_failed_repair
+    except Exception:
+        discard_failed_repair = True
 
     if error_type == "add_phone" and _auth_repair_retry_add_phone_enabled():
         prev_count = int(acc.get("auth_retry_count") or 0) if acc.get("auth_last_error") == "add_phone" else 0
@@ -713,6 +872,19 @@ def _record_auth_repair_failure(
             "auth_retry_paused": True,
         }
         release_team_seat = True
+    elif error_type in AUTH_REPAIR_RELEASE_TEAM_BLOCKER_TYPES and (
+        missing_auth_file or team_blocking_status or discard_failed_repair
+    ):
+        prev_count = int(acc.get("auth_retry_count") or 0)
+        state = {
+            "auth_retry_count": prev_count + 1,
+            "auth_last_error": error_type,
+            "auth_last_error_detail": error_detail,
+            "auth_last_failed_at": now,
+            "auth_retry_after": None,
+            "auth_retry_paused": True,
+        }
+        release_team_seat = True
     else:
         prev_count = int(acc.get("auth_retry_count") or 0)
         next_count = min(prev_count + 1, len(retry_delays))
@@ -726,6 +898,14 @@ def _record_auth_repair_failure(
             "auth_retry_after": retry_after,
             "auth_retry_paused": False,
         }
+        if error_type in AUTH_REPAIR_RELEASE_AFTER_RETRY_TYPES and next_count >= len(retry_delays):
+            state["auth_retry_after"] = None
+            state["auth_retry_paused"] = True
+            release_team_seat = True
+
+    if release_team_seat and protected_local_credential:
+        logger.warning("[认证修复] 保留受保护的本地凭证席位: %s", email)
+        release_team_seat = False
 
     update_account(email, **state)
 
@@ -745,6 +925,13 @@ def _record_auth_repair_failure(
     # 走 default_machine.transition 时映射到 AccountState.AUTH_PENDING.
     final_status = STATUS_STANDBY if seat_released or not is_team_member else STATUS_AUTH_INVALID
     update_account(email, status=final_status, _reason=f"auth_repair:{error_type}")
+    if discard_failed_repair and seat_released and not protected_local_credential:
+        _discard_auth_repair_failed_account_record(
+            email,
+            f"auth_repair_failed:{error_type}",
+            status=STATUS_STANDBY,
+            now=now,
+        )
 
     return {
         **state,
@@ -752,6 +939,130 @@ def _record_auth_repair_failure(
         "seat_released": seat_released,
         "release_attempted": release_attempted,
         "remove_status": remove_status,
+        "protected_local_credential": protected_local_credential,
+    }
+
+
+def _login_codex_with_result(
+    email: str,
+    password: str,
+    *,
+    mail_client=None,
+    max_attempts: int = 3,
+    signup_profile: SignupProfile | None = None,
+    pre_signed_in_cookies: list | None = None,
+    playwright_proxy_url: str | None = None,
+) -> dict:
+    """Run Codex OAuth with the explicit result wrapper used by auth repair.
+
+    This helper is intentionally isolated from `cmd_check` seat-release policy.
+    It normalizes old bundle/None callers, current `return_result=True` callers,
+    and rejected non-Team bundles into one retryable result shape.
+    """
+    max_attempts = max(1, int(max_attempts))
+
+    def _reject_non_team(bundle: dict | None) -> dict | None:
+        if not isinstance(bundle, dict) or not bundle:
+            return None
+        plan_type = str(bundle.get("plan_type") or "").lower()
+        if plan_type == "team":
+            return None
+        return {
+            "ok": False,
+            "bundle": None,
+            "error_type": "non_team_plan",
+            "error_detail": f"登录后 plan={plan_type or 'unknown'}，未进入 Team workspace",
+            "retryable": True,
+        }
+
+    def _result_from_legacy_bundle(bundle) -> dict:
+        non_team = _reject_non_team(bundle if isinstance(bundle, dict) else None)
+        if non_team:
+            return non_team
+        return {
+            "ok": bool(bundle),
+            "bundle": bundle if bundle else None,
+            "error_type": None if bundle else "login_failed",
+            "error_detail": None if bundle else "登录失败",
+            "retryable": False if bundle else True,
+        }
+
+    def _call_login(use_cookies: list | None) -> dict:
+        kwargs = {"mail_client": mail_client, "return_result": True}
+        if signup_profile is not None:
+            kwargs["signup_profile"] = signup_profile
+        if use_cookies is not None:
+            kwargs["pre_signed_in_cookies"] = use_cookies
+        if playwright_proxy_url is not None:
+            kwargs["playwright_proxy_url"] = playwright_proxy_url
+
+        try:
+            result = login_codex_via_browser(email, password, **kwargs)
+        except TypeError:
+            # Keep test doubles and older call signatures usable while current
+            # production code accepts the extended kwargs above.
+            result = login_codex_via_browser(
+                email,
+                password,
+                mail_client=mail_client,
+                return_result=True,
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "bundle": None,
+                "error_type": "exception",
+                "error_detail": str(exc),
+                "retryable": True,
+            }
+
+        if isinstance(result, dict) and "ok" in result:
+            non_team = _reject_non_team(result.get("bundle"))
+            if result.get("ok") and non_team:
+                return non_team
+            return result
+        return _result_from_legacy_bundle(result)
+
+    last_result = None
+    for attempt in range(1, max_attempts + 1):
+        # Captured ChatGPT/Auth cookies are a first-attempt shortcut. If they
+        # fail, later attempts fall back to the full login/OAuth path.
+        use_cookies = pre_signed_in_cookies if attempt == 1 else None
+        result = _call_login(use_cookies)
+        result["attempts"] = attempt
+        if result.get("ok"):
+            return result
+
+        last_result = result
+        error_type = result.get("error_type")
+        retryable = bool(result.get("retryable"))
+        if attempt >= max_attempts or not retryable or error_type in AUTH_REPAIR_SINGLE_ATTEMPT_FAILURE_TYPES:
+            return result
+
+        logger.warning(
+            "[Codex] %s 登录未完成（%s），准备在本轮重试第 %d/%d 次",
+            email,
+            _auth_repair_error_label(error_type),
+            attempt + 1,
+            max_attempts,
+        )
+        retry_delay = _oauth_retry_delay_seconds(error_type)
+        if retry_delay > 0:
+            logger.info(
+                "[Codex] %s 命中 %s，等待 %d 秒后重试以规避瞬时组织/出口抖动",
+                email,
+                _auth_repair_error_label(error_type),
+                retry_delay,
+            )
+            time.sleep(retry_delay)
+
+    return last_result or {
+        "ok": False,
+        "bundle": None,
+        "error_type": "login_failed",
+        "error_detail": "登录失败",
+        "retryable": True,
+        "attempts": max_attempts,
     }
 
 
@@ -796,13 +1107,10 @@ def _find_team_auth_file(email):
     严格只接 -team-*.json:personal/plus/free 席位 auth 不能用于 Team 子号,
     用错 plan 的 bundle 会被 OAuth 拒收(参考 codex-oauth personal 模式回退)。
     """
-    try:
-        from autoteam.auth_storage import AUTH_DIR
-    except Exception:
-        return None
-    if not AUTH_DIR.exists():
-        return None
-    candidates = sorted(AUTH_DIR.glob(f"codex-{email}-team-*.json"))
+    candidates: list[Path] = []
+    for auth_dir in _auth_search_dirs():
+        if auth_dir.exists():
+            candidates.extend(sorted(auth_dir.glob(f"codex-{email}-team-*.json")))
     return str(candidates[0]) if candidates else None
 
 
@@ -1264,16 +1572,22 @@ def sync_account_states(chatgpt_api=None):
         email = acc["email"].lower()
         in_team = email in team_emails
 
-        if in_team and acc["status"] in (STATUS_STANDBY, STATUS_PENDING):
+        if in_team and acc["status"] in (STATUS_STANDBY, STATUS_PENDING, "auth_pending"):
             # Round 12 wire-up M1 — go through state machine (default_machine.transition).
             ws_id = account_id or None
+            protect_team_seat = _has_auth_file(acc)
             _transition_status(
                 acc["email"], STATUS_ACTIVE,
                 workspace_account_id=ws_id,
+                protect_team_seat=protect_team_seat,
+                remote_seen_at=now_ts,
                 _reason="sync_account_states:in_team",
             )
             # 内存里也同步,后续 need_probe / domain_suffix 分支基于刷新后的状态判断
             acc["status"] = STATUS_ACTIVE
+            acc["remote_seen_at"] = now_ts
+            if protect_team_seat:
+                acc["protect_team_seat"] = True
             if account_id:
                 acc["workspace_account_id"] = account_id
             changed = True
@@ -1416,19 +1730,22 @@ def sync_account_states(chatgpt_api=None):
                 # 判断是否在 Team 中
                 in_team = email in team_emails
                 status = STATUS_ACTIVE if in_team else STATUS_STANDBY
-                accounts.append(
-                    {
-                        "email": email,
-                        "password": "",
-                        "cloudmail_account_id": None,
-                        "status": status,
-                        "auth_file": str(auth_file),
-                        "quota_exhausted_at": None,
-                        "quota_resets_at": None,
-                        "created_at": time.time(),
-                        "last_active_at": None,
-                    }
-                )
+                recovered = {
+                    "email": email,
+                    "password": "",
+                    "cloudmail_account_id": None,
+                    "status": status,
+                    "auth_file": str(auth_file),
+                    "quota_exhausted_at": None,
+                    "quota_resets_at": None,
+                    "created_at": time.time(),
+                    "last_active_at": None,
+                }
+                if in_team:
+                    recovered["protect_team_seat"] = True
+                    if account_id:
+                        recovered["workspace_account_id"] = account_id
+                accounts.append(recovered)
                 local_email_set.add(email)
                 changed = True
                 logger.info("[同步] 从 auths 目录恢复账号: %s（%s）", email, status)
@@ -1623,14 +1940,20 @@ STANDBY_PROBE_INTERVAL_SEC = 1.5  # 每个 standby 账号探测间隔,限速避�
 STANDBY_PROBE_DEDUP_SEC = 24 * 3600  # 24h 内已探测过的 standby 跳过
 
 
-def cmd_check(include_standby: bool = False):
+def cmd_check(
+    include_standby: bool = False,
+    *,
+    force_auth_repair: bool = False,
+    preserve_low_active: bool = False,
+    preserved_low_accounts=None,
+):
     """检查 active 账号的额度,无认证文件或 auth_error 的自动重新登录 Codex。
 
     参数:
         include_standby: True 时额外探测 standby 池每个账号的 quota(限速 + 24h 去重),
                          401/403 的标记为 STATUS_AUTH_INVALID。默认 False 保持向后兼容。
     """
-    from autoteam.config import AUTO_CHECK_THRESHOLD, CLOUDMAIL_DOMAIN
+    from autoteam.config import AUTO_CHECK_THRESHOLD
 
     # API 运行时配置优先（前端可修改）
     try:
@@ -1765,21 +2088,52 @@ def cmd_check(include_standby: bool = False):
 
         accounts = load_accounts()
 
-    all_active = [a for a in accounts if a["status"] == STATUS_ACTIVE and not _is_main_account_email(a.get("email"))]
+    all_active = [
+        a
+        for a in accounts
+        if a["status"] == STATUS_ACTIVE and not _is_main_account_email(a.get("email")) and not is_account_disabled(a)
+    ]
+    auth_pending_accounts = [
+        a
+        for a in accounts
+        if _is_auth_repair_pending_status(a.get("status"))
+        and not _is_main_account_email(a.get("email"))
+        and not is_account_disabled(a)
+    ]
 
     # 区分：有认证文件的 vs 无认证文件的
     active_with_auth = []
     no_auth_list = []
+    skipped_repairs = []
+    mail_domain = get_mail_domain()
+    mail_domain_suffix = mail_domain.lstrip("@") if mail_domain else ""
     for a in all_active:
-        if a.get("auth_file") and Path(a["auth_file"]).exists():
+        if _has_auth_file(a):
             active_with_auth.append(a)
         else:
-            # 只管我们域名的账号
-            if CLOUDMAIL_DOMAIN and CLOUDMAIL_DOMAIN.lstrip("@") in a["email"]:
+            if _can_attempt_auth_repair(a, mail_domain_suffix):
+                skip_reason = _auth_repair_skip_reason(a, force=force_auth_repair)
+                if skip_reason:
+                    skipped_repairs.append((a["email"], skip_reason))
+                    continue
                 no_auth_list.append(a)
+    for a in auth_pending_accounts:
+        if _has_auth_file(a):
+            active_with_auth.append(a)
+        elif _can_attempt_auth_repair(a, mail_domain_suffix):
+            skip_reason = _auth_repair_skip_reason(a, force=force_auth_repair)
+            if skip_reason:
+                skipped_repairs.append((a["email"], skip_reason))
+                continue
+            no_auth_list.append(a)
+
+    if skipped_repairs:
+        logger.info("[检查] 跳过 %d 个处于冷却/暂停中的认证修复账号:", len(skipped_repairs))
+        for email, reason in skipped_repairs:
+            logger.info("[检查]   %s（%s）", email, reason)
 
     if not active_with_auth and not no_auth_list:
-        logger.info("[检查] 没有可检查的 active 账号")
+        logger.info("[检查] 没有可检查或可修复的账号")
         return []
 
     # 检查有认证文件的账号额度
@@ -1790,6 +2144,7 @@ def cmd_check(include_standby: bool = False):
         logger.info("[检查] 检查 %d 个 active 账号的额度...", len(active_with_auth))
         for acc in active_with_auth:
             email = acc["email"]
+            was_auth_pending = _is_auth_repair_pending_status(acc.get("status"))
             status_str, info = _check_and_refresh(acc)
 
             if status_str == "ok":
@@ -1804,6 +2159,23 @@ def cmd_check(include_standby: bool = False):
                     update_account(email, last_quota=info)
                     # 低于阈值视为用完
                     if p_remain < threshold:
+                        if preserve_low_active and not was_auth_pending:
+                            if preserved_low_accounts is not None:
+                                preserved_low_accounts.append(
+                                    {
+                                        "email": email,
+                                        "remaining": p_remain,
+                                        "quota": info,
+                                    }
+                                )
+                            logger.warning(
+                                "[%s] 5h剩余 %d%% < %d%%，先移后补模式暂不标记 exhausted (重置 %s)",
+                                email,
+                                p_remain,
+                                threshold,
+                                p_time,
+                            )
+                            continue
                         resets_at = p_reset or (time.time() + 18000)
                         logger.warning(
                             "[%s] 5h剩余 %d%% < %d%%，标记为 exhausted (重置 %s)", email, p_remain, threshold, p_time
@@ -1816,6 +2188,18 @@ def cmd_check(include_standby: bool = False):
                         )
                         exhausted_list.append(acc)
                     else:
+                        _auth_repair_reset(email)
+                        if was_auth_pending:
+                            update_account(email, status=STATUS_ACTIVE, last_active_at=time.time())
+                            logger.info(
+                                "[%s] 认证已恢复 - 5h剩余: %d%% (重置 %s) | 周剩余: %d%% (重置 %s)",
+                                email,
+                                p_remain,
+                                p_time,
+                                w_remain,
+                                w_time,
+                            )
+                            continue
                         logger.info(
                             "[%s] 额度可用 - 5h剩余: %d%% (重置 %s) | 周剩余: %d%% (重置 %s)",
                             email,
@@ -1825,6 +2209,7 @@ def cmd_check(include_standby: bool = False):
                             w_time,
                         )
                 else:
+                    _auth_repair_reset(email)
                     logger.info("[%s] 额度可用", email)
             elif status_str == "exhausted":
                 quota_info = quota_result_quota_info(info) or {}
@@ -1887,15 +2272,62 @@ def cmd_check(include_standby: bool = False):
                     else:
                         logger.info("[%s] token 失效但 5h 重置时间已过，需重新登录验证", email)
                 logger.warning("[%s] 认证失败，需要重新登录 Codex", email)
-                auth_error_list.append(acc)
+                skip_reason = _auth_repair_skip_reason(acc, force=force_auth_repair)
+                if skip_reason:
+                    skipped_repairs.append((email, skip_reason))
+                else:
+                    auth_error_list.append(acc)
+            elif status_str == "no_auth":
+                skip_reason = _auth_repair_skip_reason(acc, force=force_auth_repair)
+                if skip_reason:
+                    skipped_repairs.append((email, skip_reason))
+                else:
+                    auth_error_list.append(acc)
             elif status_str == "network_error":
-                # 网络抖动/5xx/429:不算"额度用完",也不算"token 失效"。本轮跳过,不动 status,
-                # 不进 exhausted_list,也不进 auth_error_list(避免触发昂贵的重登流程)。
-                logger.warning("[%s] 额度查询遇到临时网络错误,本轮跳过,等待下一轮重试", email)
+                historical_low = _historical_low_quota_info(acc, threshold)
+                if historical_low:
+                    quota_info = quota_result_quota_info(historical_low) or acc.get("last_quota")
+                    remaining = int(historical_low.get("remaining", 0) or 0)
+                    resets_at = quota_result_resets_at(historical_low) or int(time.time() + 18000)
+                    reset_time = time.strftime("%m-%d %H:%M", time.localtime(resets_at)) if resets_at else "?"
+                    if preserve_low_active and not was_auth_pending:
+                        if preserved_low_accounts is not None:
+                            preserved_low_accounts.append(
+                                {
+                                    "email": email,
+                                    "remaining": remaining,
+                                    "quota": quota_info,
+                                }
+                            )
+                        logger.warning(
+                            "[%s] 额度接口暂时不可达，但历史 5h 剩余 %d%% < %d%%，先移后补模式纳入轮换候选 (重置 %s)",
+                            email,
+                            remaining,
+                            threshold,
+                            reset_time,
+                        )
+                        continue
+                    logger.warning(
+                        "[%s] 额度接口暂时不可达，但历史 5h 剩余 %d%% < %d%%，标记为 exhausted (重置 %s)",
+                        email,
+                        remaining,
+                        threshold,
+                        reset_time,
+                    )
+                    update_account(
+                        email,
+                        status=STATUS_EXHAUSTED,
+                        last_quota=quota_info,
+                        quota_exhausted_at=time.time(),
+                        quota_resets_at=resets_at,
+                    )
+                    exhausted_list.append(acc)
+                    continue
+                logger.warning("[%s] 额度接口暂时不可达，保留当前凭证和席位状态，等待下一轮复查", email)
 
-    # 无认证文件的 active 账号也需要重新登录
+    # 无认证文件的 Team 内账号也需要重新登录
     if no_auth_list:
-        logger.info("[检查] 发现 %d 个 active 账号无认证文件，需要登录 Codex:", len(no_auth_list))
+        logger.info("[检查] 发现 %d 个 Team 内账号无认证文件，需要登录 Codex:", len(no_auth_list))
         for a in no_auth_list:
             logger.info("[检查]   %s", a["email"])
         auth_error_list.extend(no_auth_list)
@@ -1929,24 +2361,28 @@ def cmd_check(include_standby: bool = False):
         auth_error_list = survivable_auth_errors
 
     if auth_error_list:
-        logger.info("[检查] 重新登录 %d 个 token 失效的账号...", len(auth_error_list))
-        mail_client = CloudMailClient()
-        mail_client.login()
+        logger.info("[检查] 重新登录 %d 个认证失效/待修复的账号...", len(auth_error_list))
+        mail_clients = {}
         for acc in auth_error_list:
             email = acc["email"]
             password = acc.get("password", "")
             logger.info("[%s] 重新 Codex 登录...", email)
+            provider = (acc.get("mail_provider") or get_mail_provider_name()).strip().lower()
+            mail_client = mail_clients.get(provider)
+            if mail_client is None:
+                mail_client = _get_account_mail_client(acc)
+                mail_clients[provider] = mail_client
             auth_proxy_url, playwright_proxy_url = _ensure_account_ipv6_proxy(email)
-            bundle = _login_codex_via_browser_with_proxy(
-                email,
-                password,
-                mail_client=mail_client,
-                playwright_proxy_url=playwright_proxy_url,
-            )
-            if bundle:
+            login_kwargs = {"mail_client": mail_client}
+            if playwright_proxy_url:
+                login_kwargs["playwright_proxy_url"] = playwright_proxy_url
+            login_result = _login_codex_with_result(email, password, **login_kwargs)
+            bundle = login_result.get("bundle")
+            if login_result.get("ok") and bundle:
                 _attach_account_proxy_to_bundle(email, bundle, auth_proxy_url)
                 auth_file = save_auth_file(bundle)
                 update_account(email, auth_file=auth_file)
+                _auth_repair_reset(email)
                 logger.info("[%s] token 已更新", email)
                 # 重新检查额度
                 status_str, info = _check_and_refresh(find_account(load_accounts(), email))
@@ -1976,15 +2412,44 @@ def cmd_check(include_standby: bool = False):
                         )
                         exhausted_list.append(acc)
                     else:
+                        _auth_repair_reset(email)
+                        update_account(email, status=STATUS_ACTIVE, last_active_at=time.time())
                         logger.info("[%s] 额度可用 (%d%%)", email, p_remain)
                 elif status_str == "ok":
+                    _auth_repair_reset(email)
+                    update_account(email, status=STATUS_ACTIVE, last_active_at=time.time())
                     logger.info("[%s] 额度可用", email)
                 elif status_str == "auth_error":
-                    logger.warning("[%s] 重新登录后仍无法查询额度（可能未选中 Team workspace），标记为 standby", email)
-                    update_account(email, status=STATUS_STANDBY)
+                    result = _record_auth_repair_failure(
+                        email,
+                        login_result.get("error_type") or "non_team_plan",
+                        login_result.get("error_detail") or "重新登录后仍无法查询额度",
+                    )
+                    extra = _auth_repair_result_suffix(result)
+                    logger.warning(
+                        "[%s] 重新登录后仍无法查询额度（可能未选中 Team workspace），标记为 %s%s",
+                        email,
+                        result.get("status"),
+                        extra,
+                    )
+                elif status_str == "network_error":
+                    _auth_repair_reset(email)
+                    update_account(email, status=STATUS_ACTIVE, last_active_at=time.time())
+                    logger.warning("[%s] 重新登录成功，但额度接口暂时不可达；保留 active 并等待下一轮复查", email)
             else:
-                logger.error("[%s] Codex 登录失败，标记为 standby", email)
-                update_account(email, status=STATUS_STANDBY)
+                result = _record_auth_repair_failure(
+                    email,
+                    login_result.get("error_type"),
+                    login_result.get("error_detail"),
+                )
+                extra = _auth_repair_result_suffix(result)
+                logger.error(
+                    "[%s] Codex 登录失败，标记为 %s（%s%s）",
+                    email,
+                    result.get("status"),
+                    _auth_repair_error_label(result.get("auth_last_error")),
+                    extra,
+                )
 
     # 已 exhausted 但 5h 重置时间已过 → 复测,真的回血则 promote 回 active,避免轮转
     # 多走一遍"kick → standby → re-invite"。token 仍在 Team 里时这个直接 promote 路径
@@ -2969,6 +3434,11 @@ def _get_mail_client_for_account(acc):
     return client
 
 
+def _get_account_mail_client(acc: dict | None):
+    """Compatibility wrapper for auth-repair paths that route mail per account."""
+    return _get_mail_client_for_account(acc)
+
+
 def _resolve_mail_client_or_default(mail_client, acc=None):
     """统一处理 mail_client=None 入参:按 acc 路由或走全局默认。
 
@@ -3118,7 +3588,12 @@ def _check_pending_invites(chatgpt_api, mail_client, *, leave_workspace=False, o
             password = acc.get("password") or random_password()
         else:
             password = random_password()
-            add_account(inv_email, password, workspace_account_id=get_chatgpt_account_id() or None)
+            add_account(
+                inv_email,
+                password,
+                workspace_account_id=get_chatgpt_account_id() or None,
+                mail_provider=_mail_provider_name_for_client(mail_client),
+            )
 
         # 关闭 ChatGPT 浏览器再注册
         chatgpt_api.stop()
@@ -3160,6 +3635,8 @@ _DIRECT_EMAIL_SELECTORS = (
 )
 _DIRECT_PASSWORD_SELECTORS = 'input[name="password"], input[type="password"]'
 _DIRECT_CODE_SELECTORS = 'input[name="code"], input[placeholder*="验证码"], input[placeholder*="code" i]'
+_DIRECT_MULTI_CODE_SELECTOR = 'input[maxlength="1"]'
+_DIRECT_CODE_RENDER_TIMEOUT = 25
 
 
 def _safe_invite_screenshot(page, name):
@@ -3202,16 +3679,123 @@ def _pending_historical_exhausted_info(quota_info, now=None):
     return exhausted_info
 
 
-def _first_visible_editable_locator(page, selectors, timeout=800):
+def _historical_low_quota_info(acc, threshold, now=None):
+    """Return a low-quota decision from saved quota when live quota is unavailable."""
+    quota_info = acc.get("last_quota") if isinstance(acc, dict) else None
+    if not isinstance(quota_info, dict):
+        return None
+
+    current_ts = time.time() if now is None else now
+    exhausted_info = _pending_historical_exhausted_info(quota_info, now=current_ts)
+    if exhausted_info:
+        result = dict(exhausted_info)
+        result["remaining"] = 0
+        result["historical_low"] = True
+        return result
+
     try:
-        locator = page.locator(selectors).first
-        if not locator.is_visible(timeout=timeout):
-            return None
-        if locator.is_editable(timeout=timeout):
-            return locator
+        primary_pct = int(quota_info.get("primary_pct", 0) or 0)
+        threshold_int = int(threshold)
     except Exception:
         return None
+
+    remaining = max(0, 100 - primary_pct)
+    if remaining >= threshold_int:
+        return None
+
+    try:
+        primary_resets_at = int(quota_info.get("primary_resets_at", 0) or 0)
+    except Exception:
+        primary_resets_at = 0
+    if primary_resets_at and current_ts >= primary_resets_at:
+        return None
+
+    return {
+        "window": "primary",
+        "resets_at": primary_resets_at or int(current_ts + 18000),
+        "quota_info": quota_info,
+        "remaining": remaining,
+        "historical_low": True,
+    }
+
+
+def _first_visible_editable_locator(page, selectors, timeout=800):
+    candidates = selectors if isinstance(selectors, (list, tuple)) else [selectors]
+    for selector in candidates:
+        try:
+            locator = page.locator(selector).first
+            if not locator.is_visible(timeout=timeout):
+                continue
+            if locator.is_editable(timeout=timeout):
+                return locator
+        except Exception:
+            continue
     return None
+
+
+def _visible_single_char_code_inputs(page, timeout=300):
+    try:
+        visible_inputs = []
+        for locator in page.locator(_DIRECT_MULTI_CODE_SELECTOR).all():
+            try:
+                if locator.is_visible(timeout=timeout) and locator.is_editable(timeout=timeout):
+                    visible_inputs.append(locator)
+            except Exception:
+                continue
+        if len(visible_inputs) >= 4:
+            return visible_inputs
+    except Exception:
+        pass
+    return []
+
+
+def _wait_for_direct_code_target(page, timeout=_DIRECT_CODE_RENDER_TIMEOUT):
+    deadline = time.time() + max(0.0, float(timeout))
+
+    while time.time() < deadline:
+        split_inputs = _visible_single_char_code_inputs(page, timeout=300)
+        if split_inputs:
+            return {"mode": "split", "target": split_inputs}
+
+        code_input = _first_visible_editable_locator(page, _DIRECT_CODE_SELECTORS, timeout=300)
+        if code_input:
+            return {"mode": "single", "target": code_input}
+
+        step = _detect_direct_register_step(page)
+        if step != "code":
+            return {"mode": "advanced", "step": step}
+        time.sleep(0.5)
+
+    step = _detect_direct_register_step(page)
+    if step != "code":
+        return {"mode": "advanced", "step": step}
+    return {"mode": "timeout", "step": "code"}
+
+
+def _submit_direct_verification_code(page, code_target, verification_code):
+    mode = (code_target or {}).get("mode")
+    target = (code_target or {}).get("target")
+    submit_field = None
+    current_step = _detect_direct_register_step(page)
+
+    if mode == "split" and isinstance(target, list):
+        for index, char in enumerate(verification_code):
+            if index >= len(target):
+                break
+            target[index].fill(char)
+            time.sleep(0.1)
+        if target:
+            submit_field = target[0]
+    elif mode == "single" and target:
+        target.fill(verification_code)
+        submit_field = target
+    else:
+        return _detect_direct_register_step(page)
+
+    time.sleep(0.5)
+    if submit_field is not None:
+        _click_primary_auth_button(page, submit_field, ["Continue", "继续", "Verify"])
+    return _wait_for_direct_step_change(page, current_step, timeout=20)
 
 
 def _collect_date_spinbutton_meta(page):
@@ -3335,6 +3919,8 @@ def _detect_direct_register_step(page):
     url = (page.url or "").lower()
     if _is_google_redirect(page):
         return "google"
+    if "/api/auth/error" in url or url.endswith("/auth/error"):
+        return "error"
 
     if "email-verification" in url:
         return "code"
@@ -3380,6 +3966,8 @@ def _wait_for_direct_register_step(page, allowed_steps, timeout=15):
     deadline = time.time() + timeout
     while time.time() < deadline:
         step = _detect_direct_register_step(page)
+        if step == "error":
+            return step
         if step in allowed_steps:
             return step
         time.sleep(0.5)
@@ -3677,6 +4265,14 @@ def _register_direct_once(
                 logger.warning("[直接注册] 邮箱步骤仍停留在 Google 登录页")
                 cleanup_direct_register()
                 return False, None
+            if current_step == "error":
+                logger.warning("[直接注册] 邮箱步骤进入认证错误页 | URL: %s | body=%s", page.url, _page_excerpt(page))
+                cleanup_direct_register()
+                return False, None
+            if current_step == "unknown":
+                logger.warning("[直接注册] 邮箱步骤进入未知状态 | URL: %s | body=%s", page.url, _page_excerpt(page))
+                cleanup_direct_register()
+                return False, None
             if current_step == "email":
                 logger.warning("[直接注册] 邮箱步骤未推进 | URL: %s | body=%s", page.url, _page_excerpt(page))
                 cleanup_direct_register()
@@ -3691,11 +4287,19 @@ def _register_direct_once(
             # 等待页面跳转完成（可能跳到 create-account/password）
             password_step = _wait_for_direct_register_step(
                 page,
-                {"password", "code", "profile", "completed", "google", "email"},
+                {"password", "code", "profile", "completed", "google", "email", "error"},
                 timeout=15,
             )
             logger.info("[直接注册] 密码页检测状态: %s | URL: %s", password_step, page.url)
             _safe_invite_screenshot(page, "direct_03b_before_password.png")
+            if password_step == "error":
+                logger.warning("[直接注册] 密码步骤进入认证错误页 | URL: %s | body=%s", page.url, _page_excerpt(page))
+                cleanup_direct_register()
+                return False, None
+            if password_step == "unknown":
+                logger.warning("[直接注册] 无法识别密码/验证码步骤 | URL: %s | body=%s", page.url, _page_excerpt(page))
+                cleanup_direct_register()
+                return False, None
 
             try:
                 for attempt in range(2):
@@ -3744,6 +4348,14 @@ def _register_direct_once(
                 logger.warning("[直接注册] 密码步骤仍停留在 Google 登录页")
                 cleanup_direct_register()
                 return False, None
+            if current_step == "error":
+                logger.warning("[直接注册] 密码步骤进入认证错误页 | URL: %s | body=%s", page.url, _page_excerpt(page))
+                cleanup_direct_register()
+                return False, None
+            if current_step == "unknown":
+                logger.warning("[直接注册] 密码步骤进入未知状态 | URL: %s | body=%s", page.url, _page_excerpt(page))
+                cleanup_direct_register()
+                return False, None
             if current_step == "email":
                 logger.warning("[直接注册] 提交密码前流程回退到邮箱页 | URL: %s | body=%s", page.url, _page_excerpt(page))
                 cleanup_direct_register()
@@ -3755,15 +4367,29 @@ def _register_direct_once(
                 cleanup_direct_register()
                 raise
 
-            code_input = None
-            try:
-                code_input = page.locator(_DIRECT_CODE_SELECTORS).first
-                if not code_input.is_visible(timeout=5000):
-                    code_input = None
-            except Exception:
-                code_input = None
+            code_step = _detect_direct_register_step(page)
+            code_target = None
+            if code_step == "code":
+                logger.info("[直接注册] 等待验证码输入框渲染...")
+                code_target_result = _wait_for_direct_code_target(page, timeout=_DIRECT_CODE_RENDER_TIMEOUT)
+                mode = code_target_result.get("mode")
+                if mode in {"single", "split"}:
+                    code_target = code_target_result
+                    logger.info("[直接注册] 验证码输入框已就绪（mode=%s）", mode)
+                elif mode == "advanced":
+                    logger.info(
+                        "[直接注册] 验证码页等待期间流程已推进到 %s | URL: %s",
+                        code_target_result.get("step"),
+                        page.url,
+                    )
+                else:
+                    logger.warning(
+                        "[直接注册] 已停留在 email-verification 但 %ss 内未就绪验证码输入框 | URL: %s",
+                        _DIRECT_CODE_RENDER_TIMEOUT,
+                        page.url,
+                    )
 
-            if code_input:
+            if code_target:
                 logger.info("[直接注册] 等待验证码...")
                 verification_code = None
                 start_t = time.time()
@@ -3781,10 +4407,8 @@ def _register_direct_once(
 
                 if verification_code:
                     logger.info("[直接注册] 输入验证码: %s", verification_code)
-                    code_input.fill(verification_code)
-                    time.sleep(0.5)
-                    _click_primary_auth_button(page, code_input, ["Continue", "继续"])
-                    time.sleep(8)
+                    next_step = _submit_direct_verification_code(page, code_target, verification_code)
+                    logger.info("[直接注册] 验证码提交后状态: %s | URL: %s", next_step, page.url)
                 else:
                     logger.error("[直接注册] 未收到验证码")
                     cleanup_direct_register()
@@ -4304,7 +4928,14 @@ def create_account_direct(
     playwright_proxy_url = signup.get("playwright_proxy_url") or ""
     winner_mail_client = signup.get("mail_client") or mail_client
 
-    add_account(email, password, cloudmail_account_id=account_id, workspace_account_id=get_chatgpt_account_id() or None)
+    add_account(
+        email,
+        password,
+        cloudmail_account_id=account_id,
+        workspace_account_id=get_chatgpt_account_id() or None,
+        mail_provider=_mail_provider_name_for_client(winner_mail_client),
+        mail_account_id=account_id,
+    )
 
     post_result = _run_post_register_oauth(
         email,
@@ -6525,6 +7156,69 @@ def cmd_pull_cpa():
     return result
 
 
+def cmd_reset_quota_recovery():
+    """清空所有托管非主号账号的本地额度恢复记录。"""
+    accounts = load_accounts()
+    if not accounts:
+        summary = {
+            "total_accounts": 0,
+            "updated_accounts": 0,
+            "rearmed_exhausted_to_active": 0,
+            "rearmed_exhausted_to_auth_pending": 0,
+        }
+        logger.info("[额度重置] 本地无账号记录")
+        return summary
+
+    total_accounts = 0
+    updated_accounts = 0
+    rearmed_to_active = 0
+    rearmed_to_auth_pending = 0
+
+    for acc in accounts:
+        email = acc.get("email", "")
+        if _is_main_account_email(email):
+            continue
+
+        total_accounts += 1
+        changed = False
+
+        for key in ("last_quota", "quota_resets_at", "quota_exhausted_at", "quota_window"):
+            if acc.get(key) is not None:
+                acc[key] = None
+                changed = True
+
+        if acc.get("status") == STATUS_EXHAUSTED:
+            desired_status = STATUS_ACTIVE if _has_auth_file(acc) else STATUS_AUTH_PENDING
+            if acc.get("status") != desired_status:
+                acc["status"] = desired_status
+                changed = True
+            if desired_status == STATUS_ACTIVE:
+                rearmed_to_active += 1
+            else:
+                rearmed_to_auth_pending += 1
+
+        if changed:
+            updated_accounts += 1
+
+    if updated_accounts:
+        save_accounts(accounts)
+
+    summary = {
+        "total_accounts": total_accounts,
+        "updated_accounts": updated_accounts,
+        "rearmed_exhausted_to_active": rearmed_to_active,
+        "rearmed_exhausted_to_auth_pending": rearmed_to_auth_pending,
+    }
+    logger.info(
+        "[额度重置] 完成: 扫描 %d 个账号，更新 %d 个，恢复 exhausted -> active %d 个，exhausted -> auth_pending %d 个",
+        total_accounts,
+        updated_accounts,
+        rearmed_to_active,
+        rearmed_to_auth_pending,
+    )
+    return summary
+
+
 def _reconcile_master_degraded_subaccounts(*, dry_run: bool = False, chatgpt_api=None):
     """Round 8 — SPEC-2 v1.5 §3.5.3:reconcile retroactive 清理。
 
@@ -6647,6 +7341,7 @@ def main():
     cleanup_p = sub.add_parser("cleanup", help="清理多余成员（只移除本地管理的）")
     cleanup_p.add_argument("max_seats", type=int, nargs="?", default=None, help="最大席位数")
 
+    sub.add_parser("reset-quota", help="清空本地额度恢复记录，并把 exhausted 账号恢复为可检查状态")
     sub.add_parser("sync", help="手动同步认证文件到 CPA")
     sub.add_parser("pull-cpa", help="从 CPA 反向同步认证文件到本地")
 
@@ -6703,6 +7398,8 @@ def main():
         cmd_fill(args.target)
     elif args.command == "cleanup":
         cmd_cleanup(args.max_seats)
+    elif args.command == "reset-quota":
+        cmd_reset_quota_recovery()
     elif args.command == "sync":
         sync_to_cpa()
     elif args.command == "pull-cpa":

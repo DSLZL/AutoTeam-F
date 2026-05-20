@@ -238,6 +238,84 @@ def test_session_codex_auth_flow_has_required_methods():
     assert not missing, f"SessionCodexAuthFlow 缺少必需方法: {missing}"
 
 
+def test_main_codex_login_flow_saves_without_remote_sync(monkeypatch):
+    """MainCodexLoginFlow 只保存本地主号 auth，不调用远端同步。"""
+    from autoteam import codex_auth
+
+    sync_calls = []
+
+    monkeypatch.setattr(codex_auth, "get_admin_email", lambda: "admin@example.com")
+    monkeypatch.setattr(codex_auth, "get_admin_session_token", lambda: "fake-session-token-abc123")
+    monkeypatch.setattr(codex_auth, "get_chatgpt_account_id", lambda: "ws-account-uuid-xyz")
+    monkeypatch.setattr(codex_auth, "get_chatgpt_workspace_name", lambda: "Master Team")
+    monkeypatch.setattr("autoteam.admin_state.get_admin_password", lambda: "admin-password")
+    monkeypatch.setattr(
+        codex_auth.SessionCodexAuthFlow,
+        "complete",
+        lambda self: {
+            "email": "admin@example.com",
+            "auth_file": "/tmp/codex-main-ws-account-uuid-xyz.json",
+            "plan_type": "team",
+            "bundle": _make_complete_bundle(),
+        },
+    )
+    monkeypatch.setattr(
+        "autoteam.sync_targets.sync_main_codex_to_configured_targets",
+        lambda filepath: sync_calls.append(filepath),
+    )
+
+    result = codex_auth.MainCodexLoginFlow().complete()
+
+    assert result == {
+        "email": "admin@example.com",
+        "auth_file": "/tmp/codex-main-ws-account-uuid-xyz.json",
+        "plan_type": "team",
+    }
+    assert sync_calls == []
+
+
+def test_main_codex_login_flow_passes_saved_admin_password(monkeypatch):
+    """主号 Codex 登录在 OTP 入口不可用时可回退保存的管理员密码。"""
+    from autoteam import codex_auth
+
+    captured = {}
+
+    def fake_init(self, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(codex_auth, "get_admin_email", lambda: "admin@example.com")
+    monkeypatch.setattr(codex_auth, "get_admin_session_token", lambda: "fake-session-token-abc123")
+    monkeypatch.setattr(codex_auth, "get_chatgpt_account_id", lambda: "ws-account-uuid-xyz")
+    monkeypatch.setattr(codex_auth, "get_chatgpt_workspace_name", lambda: "Master Team")
+    monkeypatch.setattr("autoteam.admin_state.get_admin_password", lambda: "admin-password")
+    monkeypatch.setattr(codex_auth.SessionCodexAuthFlow, "__init__", fake_init)
+
+    codex_auth.MainCodexLoginFlow()
+
+    assert captured["password"] == "admin-password"
+
+
+def test_session_codex_auth_flow_uses_password_when_otp_switch_unavailable(monkeypatch):
+    from autoteam import codex_auth
+
+    flow = codex_auth.SessionCodexAuthFlow(
+        email="admin@example.com",
+        session_token="session-token",
+        account_id="account-id",
+        workspace_name="workspace",
+        password="admin-password",
+    )
+    steps = iter([("password_required", None), ("completed", None)])
+    calls = []
+
+    monkeypatch.setattr(flow, "_detect_step", lambda: next(steps))
+    monkeypatch.setattr(flow, "_switch_password_to_otp", lambda: False)
+    monkeypatch.setattr(flow, "_auto_fill_password", lambda: calls.append("password") or True)
+
+    assert flow._advance(attempts=2) == {"step": "completed", "detail": None}
+    assert calls == ["password"]
+
+
 def test_inject_auth_cookies_guards_account_id():
     """_inject_auth_cookies 必须用 `if self.account_id:` 守护,避免空字符串污染 _account cookie.
 

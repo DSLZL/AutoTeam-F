@@ -423,6 +423,7 @@ def sync_from_cpa():
         save_accounts,
         update_account,
     )
+    from autoteam.mail import infer_mail_provider_from_email
 
     AUTH_DIR.mkdir(exist_ok=True)
 
@@ -572,9 +573,16 @@ def sync_from_cpa():
 
         acc = find_account(accounts, email)
         resolved_path = str(normalized_path.resolve())
+        inferred_provider = infer_mail_provider_from_email(email)
         if acc:
+            acc_changed = False
             if acc.get("auth_file") != resolved_path:
                 acc["auth_file"] = resolved_path
+                acc_changed = True
+            if inferred_provider and not acc.get("mail_provider"):
+                acc["mail_provider"] = inferred_provider
+                acc_changed = True
+            if acc_changed:
                 changed_accounts = True
                 updated_accounts += 1
         else:
@@ -582,7 +590,7 @@ def sync_from_cpa():
             # 紧接着 update_account → STANDBY 一次性带上 auth_file. 这样状态机能落每条
             # state_log.jsonl + F2 SSE 推送, 不再静默直 append 旁路.
             try:
-                add_account(email, "", cloudmail_account_id=None)
+                add_account(email, "", cloudmail_account_id=None, mail_provider=inferred_provider or None)
                 update_account(
                     email,
                     status=STATUS_STANDBY,
@@ -602,6 +610,7 @@ def sync_from_cpa():
                         "email": email,
                         "password": "",
                         "cloudmail_account_id": None,
+                        "mail_provider": inferred_provider or "",
                         "status": STATUS_STANDBY,
                         "auth_file": resolved_path,
                         "quota_exhausted_at": None,
@@ -682,6 +691,9 @@ def sync_to_cpa():
     synced_active = 0
     synced_personal = 0
     disabled_skipped = 0
+    active_publish_skipped = 0
+    active_publish_kept_remote = 0
+    active_publish_delete_remote = 0
     for acc in accounts:
         if is_account_disabled(acc):
             disabled_skipped += 1
@@ -695,6 +707,19 @@ def sync_to_cpa():
         path = Path(auth_path)
         if not path.exists():
             continue
+
+        if status == STATUS_ACTIVE:
+            decision = _active_auth_publish_decision(acc, path)
+            if decision == "keep_remote":
+                active_publish_kept_remote += 1
+                continue
+            if decision == "delete_remote":
+                active_publish_delete_remote += 1
+                continue
+            if decision != "publish":
+                active_publish_skipped += 1
+                continue
+
         _refresh_account_proxy_url_for_upload(acc, path)
         files_to_sync[path.name] = path
         if status == STATUS_ACTIVE:
@@ -798,6 +823,11 @@ def sync_to_cpa():
         "synced_active": synced_active,
         "synced_personal": synced_personal,
         "disabled_skipped": disabled_skipped,
+        "active_publish": {
+            "skipped_unknown": active_publish_skipped,
+            "kept_remote": active_publish_kept_remote,
+            "delete_remote": active_publish_delete_remote,
+        },
         "local_duplicates_deleted": local_duplicates_deleted,
         "delete_guard": {
             "allow_remote_delete": allow_remote_delete,

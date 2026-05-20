@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from autoteam import cpa_sync
+from autoteam import mail as mail_module
 
 
 def test_list_cpa_files_raises_on_non_200(monkeypatch):
@@ -31,6 +32,17 @@ def test_list_cpa_files_raises_on_non_json(monkeypatch):
 
     with pytest.raises(RuntimeError, match="returned non-JSON"):
         cpa_sync.list_cpa_files()
+
+
+def test_infer_mail_provider_from_email_uses_matching_domain(monkeypatch):
+    monkeypatch.setenv("CLOUDMAIL_DOMAIN", "mail.example.com")
+    monkeypatch.setenv("MAILLAB_DOMAIN", "lab.example.com")
+    monkeypatch.setenv("ADDY_IO_DOMAIN", "alias.example.com")
+
+    assert mail_module.infer_mail_provider_from_email("user@mail.example.com") == "cf_temp_email"
+    assert mail_module.infer_mail_provider_from_email("user@lab.example.com") == "maillab"
+    assert mail_module.infer_mail_provider_from_email("user@alias.example.com") == "addy_io"
+    assert mail_module.infer_mail_provider_from_email("user@unknown.example.com") == ""
 
 
 def test_sync_to_cpa_skips_disabled_accounts_and_keeps_protected_remote(monkeypatch, tmp_path):
@@ -69,6 +81,7 @@ def test_sync_to_cpa_skips_disabled_accounts_and_keeps_protected_remote(monkeypa
 
     uploaded = []
     deleted = []
+    monkeypatch.setattr("autoteam.codex_auth.check_codex_quota", lambda *_args, **_kwargs: ("ok", {}))
     monkeypatch.setattr(cpa_sync, "upload_to_cpa", lambda path: uploaded.append(Path(path).name) or True)
     monkeypatch.setattr(cpa_sync, "delete_from_cpa", lambda name: deleted.append(name) or True)
 
@@ -204,6 +217,102 @@ def test_sync_to_cpa_preserves_credential_seat_when_remote_delete_is_allowed(mon
     assert result["delete_guard"]["skipped_protected"] == 1
 
 
+def test_sync_to_cpa_skips_exhausted_active_credential_before_upload(monkeypatch, tmp_path):
+    first_auth = tmp_path / "codex-first@example.com-team-a.json"
+    second_auth = tmp_path / "codex-second@example.com-team-b.json"
+    exhausted_auth = tmp_path / "codex-exhausted@example.com-team-c.json"
+    first_auth.write_text('{"email":"first@example.com","access_token":"token-first"}', encoding="utf-8")
+    second_auth.write_text('{"email":"second@example.com","access_token":"token-second"}', encoding="utf-8")
+    exhausted_auth.write_text('{"email":"exhausted@example.com","access_token":"token-exhausted"}', encoding="utf-8")
+
+    monkeypatch.setattr(
+        "autoteam.accounts.load_accounts",
+        lambda: [
+            {
+                "email": "first@example.com",
+                "status": "active",
+                "auth_file": str(first_auth),
+                "disabled": False,
+                "mail_provider": "cf_temp_email",
+                "mail_account_id": "mail-1",
+            },
+            {
+                "email": "second@example.com",
+                "status": "active",
+                "auth_file": str(second_auth),
+                "disabled": False,
+                "mail_provider": "cf_temp_email",
+                "mail_account_id": "mail-2",
+            },
+            {
+                "email": "exhausted@example.com",
+                "status": "active",
+                "auth_file": str(exhausted_auth),
+                "disabled": False,
+                "mail_provider": "cf_temp_email",
+                "mail_account_id": "mail-3",
+            },
+        ],
+    )
+    monkeypatch.setattr("autoteam.accounts.save_accounts", lambda _accounts: None)
+    monkeypatch.setattr(cpa_sync, "_cleanup_local_duplicates", lambda _accounts: (0, False))
+    monkeypatch.setattr(
+        cpa_sync,
+        "list_cpa_files",
+        lambda: [
+            {"name": first_auth.name, "email": "first@example.com"},
+            {"name": second_auth.name, "email": "second@example.com"},
+            {"name": exhausted_auth.name, "email": "exhausted@example.com"},
+        ],
+    )
+
+    def fake_quota(token, **_kwargs):
+        if token == "token-exhausted":
+            return "exhausted", {"primary_pct": 0}
+        return "ok", {"primary_pct": 50}
+
+    uploaded = []
+    deleted = []
+    monkeypatch.setattr("autoteam.codex_auth.check_codex_quota", fake_quota)
+    monkeypatch.setattr(cpa_sync, "upload_to_cpa", lambda path: uploaded.append(Path(path).name) or True)
+    monkeypatch.setattr(cpa_sync, "delete_from_cpa", lambda name: deleted.append(name) or True)
+
+    result = cpa_sync.sync_to_cpa()
+
+    assert uploaded == [first_auth.name, second_auth.name]
+    assert deleted == [exhausted_auth.name]
+    assert result["synced_active"] == 2
+    assert result["active_publish"]["delete_remote"] == 1
+    assert result["delete_guard"]["allow_remote_delete"] is True
+
+
+def test_sync_to_cpa_keeps_remote_on_active_quota_network_error(monkeypatch, tmp_path):
+    auth_file = tmp_path / "codex-active@example.com-team-a.json"
+    auth_file.write_text('{"email":"active@example.com","access_token":"token-active"}', encoding="utf-8")
+
+    monkeypatch.setattr(
+        "autoteam.accounts.load_accounts",
+        lambda: [{"email": "active@example.com", "status": "active", "auth_file": str(auth_file), "disabled": False}],
+    )
+    monkeypatch.setattr("autoteam.accounts.save_accounts", lambda _accounts: None)
+    monkeypatch.setattr(cpa_sync, "_cleanup_local_duplicates", lambda _accounts: (0, False))
+    monkeypatch.setattr(cpa_sync, "list_cpa_files", lambda: [{"name": auth_file.name, "email": "active@example.com"}])
+
+    uploaded = []
+    deleted = []
+    monkeypatch.setattr("autoteam.codex_auth.check_codex_quota", lambda *_args, **_kwargs: ("network_error", {}))
+    monkeypatch.setattr(cpa_sync, "upload_to_cpa", lambda path: uploaded.append(Path(path).name) or True)
+    monkeypatch.setattr(cpa_sync, "delete_from_cpa", lambda name: deleted.append(name) or True)
+
+    result = cpa_sync.sync_to_cpa()
+
+    assert uploaded == []
+    assert deleted == []
+    assert result["synced_active"] == 0
+    assert result["active_publish"]["kept_remote"] == 1
+    assert result["delete_guard"]["allow_remote_delete"] is False
+
+
 def test_sync_to_cpa_refreshes_proxy_url_before_upload(monkeypatch, tmp_path):
     auth_file = tmp_path / "codex-enabled@example.com-team-a.json"
     auth_file.write_text('{"email":"enabled@example.com","access_token":"token-enabled"}', encoding="utf-8")
@@ -222,6 +331,7 @@ def test_sync_to_cpa_refreshes_proxy_url_before_upload(monkeypatch, tmp_path):
     monkeypatch.setattr("autoteam.accounts.save_accounts", lambda _accounts: None)
     monkeypatch.setattr(cpa_sync, "_cleanup_local_duplicates", lambda _accounts: (0, False))
     monkeypatch.setattr(cpa_sync, "list_cpa_files", lambda: [])
+    monkeypatch.setattr("autoteam.codex_auth.check_codex_quota", lambda *_args, **_kwargs: ("ok", {}))
     monkeypatch.setattr(
         "autoteam.ipv6_pool.ipv6_pool.ensure",
         lambda _email: "socks5://proxy.example:30000",

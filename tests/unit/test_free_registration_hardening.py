@@ -74,6 +74,152 @@ class _FakeKeyboard:
         self.page.active_element.typed.append(value)
 
 
+class _FakeOtpInput:
+    def __init__(self, *, visible=True, text=""):
+        self.visible = visible
+        self.text = text
+        self.filled_values = []
+        self.clicked = False
+
+    def is_visible(self, timeout=0):
+        return self.visible
+
+    def fill(self, value):
+        self.filled_values.append(value)
+
+    def click(self, timeout=0, force=False):
+        self.clicked = True
+
+    def type(self, value, delay=0):
+        self.filled_values.append(value)
+
+    def inner_text(self, timeout=0):
+        return self.text
+
+
+class _FakeOtpCollection:
+    def __init__(self, items=None, text=None):
+        self._items = list(items or [])
+        self._text = text
+
+    @property
+    def first(self):
+        if self._items:
+            return self._items[0]
+        return _FakeOtpInput(visible=False)
+
+    def all(self):
+        return list(self._items)
+
+    def inner_text(self, timeout=0):
+        if self._text is None:
+            raise AssertionError("unexpected inner_text call")
+        return self._text
+
+
+class _FakeOtpPage:
+    def __init__(self, *, url="https://auth.openai.com/email-verification", body="", slot_inputs=None, otp_input=None):
+        self.url = url
+        self._body = body
+        self._slot_inputs = list(slot_inputs or [])
+        self._otp_input = otp_input or _FakeOtpInput(visible=False)
+        self.submit_button = _FakeOtpInput(visible=True)
+        self.keyboard = type("_Keyboard", (), {"type": lambda _self, *_args, **_kwargs: None})()
+
+    def locator(self, selector):
+        if selector == "body":
+            return _FakeOtpCollection(text=self._body)
+        if selector == codex_auth._OTP_SINGLE_INPUT_SELECTORS:
+            return _FakeOtpCollection(items=self._slot_inputs)
+        if selector == codex_auth._OTP_INPUT_SELECTORS:
+            return _FakeOtpCollection(items=[self._otp_input])
+        if selector in {
+            'button[type="submit"]',
+            'button:has-text("Continue")',
+            'button:has-text("继续")',
+            'button:has-text("Verify")',
+        }:
+            return _FakeOtpCollection(items=[self.submit_button])
+        return _FakeOtpCollection(items=[])
+
+
+class _FakeChooseAccountPage:
+    _GENERIC_SELECTORS = {
+        "button",
+        "a",
+        '[role="button"]',
+        '[role="option"]',
+        '[aria-selected="true"]',
+        '[aria-selected="false"]',
+        "[data-state]",
+        "li",
+        "label",
+        "div",
+    }
+
+    def __init__(self, *, account_elements, continue_button=None):
+        self.url = "https://auth.openai.com/choose-an-account"
+        self._account_elements = list(account_elements)
+        self._continue_button = continue_button or _FakeOtpInput(visible=False)
+
+    def locator(self, selector):
+        if selector == "body":
+            return _FakeOtpCollection(text="Choose an account Continue as user@example.com")
+        if selector == 'button:has-text("Continue"), button:has-text("继续"), button:has-text("Allow")':
+            return _FakeOtpCollection(items=[self._continue_button])
+        if selector in self._GENERIC_SELECTORS:
+            return _FakeOtpCollection(items=self._account_elements)
+        return _FakeOtpCollection(items=[])
+
+
+def test_codex_otp_helper_fills_segmented_inputs():
+    slots = [_FakeOtpInput() for _ in range(6)]
+    page = _FakeOtpPage(slot_inputs=slots)
+
+    assert codex_auth._fill_otp_code(page, "481556") is True
+
+    assert [slot.filled_values[-1] for slot in slots] == list("481556")
+
+
+def test_codex_resolve_email_verification_marks_used_after_success(monkeypatch):
+    slots = [_FakeOtpInput() for _ in range(6)]
+    page = _FakeOtpPage(slot_inputs=slots)
+    used_email_ids = set()
+
+    monkeypatch.setattr(codex_auth, "_poll_mail_verification_code", lambda *args, **kwargs: ("481556", 1888))
+    monkeypatch.setattr(codex_auth, "_wait_for_otp_submit_result", lambda *args, **kwargs: ("accepted", None))
+    monkeypatch.setattr(codex_auth.time, "sleep", lambda *_args, **_kwargs: None)
+
+    status = codex_auth._resolve_email_verification(
+        page,
+        mail_client=object(),
+        email="user@example.com",
+        after_email_id=1000,
+        used_email_ids=used_email_ids,
+        wait_log="[Codex] test wait emailId > %d",
+    )
+
+    assert status == "accepted"
+    assert used_email_ids == {1888}
+    assert [slot.filled_values[-1] for slot in slots] == list("481556")
+    assert page.submit_button.clicked is True
+
+
+def test_codex_select_oauth_account_clicks_matching_email(monkeypatch):
+    other = _FakeOtpInput(text="other@example.com")
+    target = _FakeOtpInput(text="user@example.com")
+    confirm = _FakeOtpInput(text="Continue")
+    page = _FakeChooseAccountPage(account_elements=[other, target], continue_button=confirm)
+
+    monkeypatch.setattr(codex_auth.time, "sleep", lambda *_args, **_kwargs: None)
+
+    assert codex_auth._is_choose_account_page(page) is True
+    assert codex_auth._select_oauth_account(page, "user@example.com") is True
+    assert other.clicked is False
+    assert target.clicked is True
+    assert confirm.clicked is True
+
+
 class _FakeOAuthAboutYouPage:
     def __init__(self, *, spinbuttons=True, expected_order=None):
         self.url = "https://auth.openai.com/about-you"
@@ -224,6 +370,14 @@ def test_create_account_direct_reuses_signup_profile_for_register_and_oauth(monk
     assert captured["oauth"]["signup_profile"] is profile
     assert captured["oauth"]["chatgpt_session_token"] == "session-token"
     assert captured["oauth"]["leave_workspace"] is True
+
+
+def test_direct_register_step_recognizes_auth_error_page(monkeypatch):
+    page = type("_Page", (), {"url": "https://chatgpt.com/api/auth/error"})()
+
+    monkeypatch.setattr(manager_mod, "_is_google_redirect", lambda _page: False)
+
+    assert manager_mod._detect_direct_register_step(page) == "error"
 
 
 def test_create_account_direct_races_signup_workers_and_uses_winner(monkeypatch):

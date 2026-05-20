@@ -30,6 +30,7 @@ __all__ = [
     "Email",
     "MailProvider",
     "get_mail_client",
+    "infer_mail_provider_from_email",
 ]
 
 
@@ -57,6 +58,39 @@ def _resolve_provider_factory(name: str) -> Callable[[], MailProvider]:
         f"未知 mail provider name={name!r}"
         " (可选: cf_temp_email | maillab | addy_io | simplelogin)"
     )
+
+
+def _email_domain(value: object | None) -> str:
+    text = str(value or "").strip().lower()
+    if "@" not in text:
+        return ""
+    return text.rsplit("@", 1)[-1].lstrip("@").strip()
+
+
+def _normalized_domain(value: object | None) -> str:
+    return str(value or "").strip().lower().lstrip("@")
+
+
+def infer_mail_provider_from_email(email: object | None, env: dict[str, object] | None = None) -> str:
+    """Infer the configured mail provider from an account email domain.
+
+    The result is conservative: ambiguous or unknown domains return an empty
+    string so account routing can fall back to the default provider.
+    """
+    domain = _email_domain(email)
+    if not domain:
+        return ""
+
+    source = env or os.environ
+    candidates: list[tuple[str, str]] = [
+        ("cf_temp_email", _normalized_domain(source.get("CLOUDMAIL_DOMAIN"))),
+        ("maillab", _normalized_domain(source.get("MAILLAB_DOMAIN") or source.get("CLOUDMAIL_DOMAIN"))),
+        ("addy_io", _normalized_domain(source.get("ADDY_IO_DOMAIN"))),
+    ]
+    matches = [provider for provider, provider_domain in candidates if provider_domain and provider_domain == domain]
+    if len(set(matches)) == 1:
+        return matches[0]
+    return ""
 
 
 def _build_chain_from_env(chain_env: str) -> MailProvider:

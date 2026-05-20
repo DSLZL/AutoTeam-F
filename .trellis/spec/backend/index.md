@@ -21,7 +21,8 @@ This directory contains guidelines for backend development. Fill in each file wi
 | [Logging Guidelines](./logging-guidelines.md) | Structured logging, log levels | To fill |
 | [Runtime and Docker Hardening](./runtime-docker-hardening.md) | Docker resource bounds, Playwright cleanup, resource probes, transport safety, and IPv6 proxy isolation | Active |
 | [Free Registration Hardening](./free-registration-hardening.md) | Fill-personal safety boundaries, Team-seat preflight, and SignupProfile consistency | Active |
-| [Account Disable and CPA Sync Contract](./account-disable-cpa-sync.md) | Disabled-account automation exclusion and explicit CPA list failure handling | Active |
+| [Account Disable and CPA Sync Contract](./account-disable-cpa-sync.md) | Disabled-account automation exclusion, active CPA publish preflight, and explicit CPA list failure handling | Active |
+| [Setup Diagnostics Contracts](./setup-diagnostics.md) | Setup-stage read-only diagnostics such as DNS checks and auth/rate-limit behavior | Active |
 
 ---
 
