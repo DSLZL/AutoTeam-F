@@ -29,6 +29,7 @@ Authorization: Bearer <API_KEY>
 | POST | `/api/mail-provider/probe` | 邮箱后端 3 步探测(fingerprint / credentials / domain_ownership) |
 | GET | `/api/version` | 镜像版本指纹（`git_sha` + `build_time`，免鉴权，用于排查 docker 镜像是否过期） |
 | GET | `/api/status` | 账号状态 + 实时额度 |
+| GET | `/api/status?fast=true` | 快速状态快照（跳过实时额度探测，适合前端轮询和轮换任务运行时刷新） |
 | GET | `/api/accounts` | 所有账号列表 |
 | GET | `/api/accounts/active` | 活跃账号 |
 | GET | `/api/accounts/standby` | 待命账号 |
@@ -323,6 +324,10 @@ curl -X POST http://localhost:8787/api/mail-provider/probe \
 # 查看账号状态
 curl -H "Authorization: Bearer YOUR_KEY" \
   http://localhost:8787/api/status
+
+# 快速轮询状态（不触发实时额度探测）
+curl -H "Authorization: Bearer YOUR_KEY" \
+  "http://localhost:8787/api/status?fast=true"
 
 # 触发轮转
 curl -X POST -H "Authorization: Bearer YOUR_KEY" \

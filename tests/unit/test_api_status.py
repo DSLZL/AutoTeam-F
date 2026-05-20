@@ -130,6 +130,47 @@ def test_get_status_exposes_clipproxy_and_rotation_validation(tmp_path, monkeypa
     assert result["rotation_validation"]["cooldown_remaining_seconds"] == 0
 
 
+def test_get_status_fast_skips_live_quota_probe(tmp_path, monkeypatch):
+    auth_file = tmp_path / "codex-child.json"
+    auth_file.write_text(json.dumps({"access_token": "token-child"}), encoding="utf-8")
+
+    monkeypatch.setattr(api, "_is_main_account_email", lambda _email: False)
+    monkeypatch.setattr(
+        "autoteam.accounts.load_accounts",
+        lambda: [{"email": "child@example.com", "status": accounts.STATUS_ACTIVE, "auth_file": str(auth_file)}],
+    )
+    monkeypatch.setattr(
+        "autoteam.codex_auth.check_codex_quota",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("fast status must not probe quota")),
+    )
+    health_calls = []
+    monkeypatch.setattr(
+        "autoteam.cliproxy_health.get_cliproxy_health",
+        lambda **kwargs: health_calls.append(kwargs)
+        or {
+            "ok": True,
+            "safe_read_only": True,
+            "management_api": {"ok": True},
+            "provider_auth": {
+                "ok": True,
+                "provider": "codex",
+                "model": "gpt-5.5",
+                "reason": "provider_auth_has_candidates",
+                "total": 1,
+                "available": 1,
+                "check_type": "management_metadata",
+                "canary_required": True,
+            },
+        },
+    )
+
+    result = api.get_status(fast=True)
+
+    assert result["quota_cache"] == {}
+    assert result["status_mode"] == {"fast": True, "quota_budget_seconds": 0, "live_quota": False}
+    assert health_calls == [{"timeout": 0.5, "cache_ttl": 30.0}]
+
+
 def test_get_playwright_context_options_uses_fingerprint_constants(monkeypatch):
     monkeypatch.setattr(config, "PLAYWRIGHT_USER_AGENT", "AutoTeamTest/1.0")
     monkeypatch.setattr(config, "PLAYWRIGHT_LOCALE", "zh-CN")
@@ -250,6 +291,39 @@ def test_auto_check_cooldown_keeps_full_team_from_refilling(tmp_path, monkeypatc
 
     assert probed
     assert started == []
+
+
+def test_auto_check_skips_expensive_probe_when_task_is_running(monkeypatch, caplog):
+    monkeypatch.setattr(api, "_auto_check_config", {"interval": 0, "target_seats": 3, "threshold": 10, "min_low": 1})
+    monkeypatch.setattr(api, "_auto_check_stop", threading.Event())
+    monkeypatch.setattr(api, "_auto_check_restart", threading.Event())
+    monkeypatch.setattr(
+        "autoteam.accounts.load_accounts",
+        lambda: (_ for _ in ()).throw(AssertionError("busy auto-check must not load accounts")),
+    )
+    monkeypatch.setattr(
+        "autoteam.cliproxy_health.get_cliproxy_health",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("busy auto-check must not query CPA gate")),
+    )
+
+    stop_event = api._auto_check_stop
+    wait_calls = {"count": 0}
+
+    def fake_wait(_seconds):
+        wait_calls["count"] += 1
+        return wait_calls["count"] > 1
+
+    monkeypatch.setattr(stop_event, "wait", fake_wait)
+
+    api._playwright_lock.acquire()
+    try:
+        with caplog.at_level(logging.INFO):
+            api._auto_check_loop()
+    finally:
+        if api._playwright_lock.locked():
+            api._playwright_lock.release()
+
+    assert "跳过本轮自动巡检昂贵探测" in caplog.text
 
 
 def test_auto_check_cooldown_allows_full_team_blocker_replacement(monkeypatch):
@@ -585,6 +659,42 @@ def test_bulk_enable_accounts_updates_disabled_rows_only(tmp_path, monkeypatch):
     assert stored["second@example.com"]["disabled"] is False
     assert stored["already@example.com"]["disabled"] is False
     assert stored["owner@example.com"]["disabled"] is False
+
+
+def test_run_task_records_progress_history(monkeypatch):
+    task_id = "progresshist"
+    api._tasks[task_id] = {
+        "task_id": task_id,
+        "command": "auto-rotate",
+        "params": {},
+        "status": "pending",
+        "created_at": time.time(),
+        "started_at": None,
+        "finished_at": None,
+        "result": None,
+        "error": None,
+        "last_progress_at": time.time(),
+        "progress": "pending",
+        "progress_history": [],
+    }
+    monkeypatch.setattr(api, "_log_task_runtime_validation", lambda _command: {"ok": True, "severity": "ok"})
+
+    def fake_work():
+        api.bump_task_progress("rotate:sync_team")
+        api.bump_task_progress("rotate:check_quota")
+        return {"ok": True}
+
+    try:
+        api._run_task(task_id, fake_work)
+
+        task = api._tasks[task_id]
+        stages = [item["stage"] for item in task["progress_history"]]
+        assert stages == ["started", "rotate:sync_team", "rotate:check_quota", "runtime_validation", "finished"]
+        assert task["progress"] == "rotate:check_quota"
+        assert task["progress_history"][0]["duration_sec"] >= 0
+        assert task["progress_history"][-1]["stage"] == "finished"
+    finally:
+        api._tasks.pop(task_id, None)
 
 
 def test_get_status_counts_disabled_and_skips_disabled_quota_checks(tmp_path, monkeypatch):

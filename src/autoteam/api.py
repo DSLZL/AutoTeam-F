@@ -54,11 +54,11 @@ def _safe_ipv6_pool_status() -> dict:
         }
 
 
-def _safe_cliproxy_health() -> dict:
+def _safe_cliproxy_health(**kwargs) -> dict:
     try:
         from autoteam.cliproxy_health import get_cliproxy_health
 
-        return get_cliproxy_health()
+        return get_cliproxy_health(**kwargs)
     except Exception as exc:
         logger.warning("[API] CLIProxyAPI health check failed: %s", exc)
         return {
@@ -643,6 +643,7 @@ _main_codex_step: str | None = None
 _main_codex_action: str | None = None
 _manual_account_flow = None
 MAX_TASK_HISTORY = 50
+MAX_TASK_PROGRESS_HISTORY = 200
 
 
 # ---------------------------------------------------------------------------
@@ -997,6 +998,9 @@ def _run_task(task_id: str, func, *args, **kwargs):
     _current_task_id = task_id
     task["status"] = "running"
     task["started_at"] = time.time()
+    task["last_progress_at"] = task["started_at"]
+    task["progress"] = "started"
+    _record_task_progress(task, "started", task["started_at"])
 
     try:
         result = func(*args, **kwargs)
@@ -1008,16 +1012,55 @@ def _run_task(task_id: str, func, *args, **kwargs):
         task["error"] = str(e)
         logger.error("[API] 任务 %s %s: %s", task_id[:8], task["status"], e)
     finally:
-        task["finished_at"] = time.time()
+        _record_task_progress(task, "runtime_validation")
         validation = _log_task_runtime_validation(task.get("command", ""))
+        task["finished_at"] = time.time()
+        task["last_progress_at"] = task["finished_at"]
         if validation is not None:
             task["validation"] = validation
             _record_rotation_validation_decision(task.get("command", ""), validation)
             if task["status"] == "completed" and _validation_is_hard_failure(validation):
                 task["status"] = "failed"
                 task["error"] = f"runtime validation failed: {_validation_failure_reason(validation)}"
+        _record_task_progress(task, "finished", task["finished_at"])
         _current_task_id = None
         _playwright_lock.release()
+
+
+def _record_task_progress(task: dict, stage: str, now: float | None = None) -> None:
+    """Record task stage timings for live diagnostics."""
+    timestamp = time.time() if now is None else now
+    stage_name = str(stage or task.get("progress") or "progress")
+    history = task.setdefault("progress_history", [])
+
+    if history and history[-1].get("stage") == stage_name:
+        history[-1]["last_at"] = timestamp
+        history[-1]["duration_sec"] = round(timestamp - float(history[-1].get("started_at", timestamp)), 3)
+        return
+
+    if history:
+        previous = history[-1]
+        previous["ended_at"] = timestamp
+        previous["duration_sec"] = round(timestamp - float(previous.get("started_at", timestamp)), 3)
+
+    history.append({"stage": stage_name, "started_at": timestamp, "last_at": timestamp})
+    if len(history) > MAX_TASK_PROGRESS_HISTORY:
+        del history[: len(history) - MAX_TASK_PROGRESS_HISTORY]
+
+
+def bump_task_progress(stage: str = "") -> None:
+    """Update the current background task heartbeat and optional stage label."""
+    tid = _current_task_id
+    if not tid:
+        return
+    task = _tasks.get(tid)
+    if not task:
+        return
+    now = time.time()
+    task["last_progress_at"] = now
+    if stage:
+        task["progress"] = stage
+        _record_task_progress(task, stage, now)
 
 
 def _start_task(command: str, func, params: dict, *args, **kwargs) -> dict:
@@ -1037,6 +1080,9 @@ def _start_task(command: str, func, params: dict, *args, **kwargs) -> dict:
         "finished_at": None,
         "result": None,
         "error": None,
+        "last_progress_at": time.time(),
+        "progress": "pending",
+        "progress_history": [],
     }
     _tasks[task_id] = task
     _prune_tasks()
@@ -2896,7 +2942,7 @@ def post_account_login(params: LoginAccountParams):
 
 
 @app.get("/api/status")
-def get_status():
+def get_status(fast: bool = False):
     """获取所有账号状态 + active 账号实时额度"""
     from autoteam.accounts import (
         STATUS_ACTIVE,
@@ -2914,29 +2960,30 @@ def get_status():
     accounts = load_accounts()
     quota_cache = {}
 
-    for acc in accounts:
-        if not _is_main_account_email(acc.get("email")) and is_account_disabled(acc):
-            continue
-        if acc["status"] not in (STATUS_ACTIVE, STATUS_PERSONAL) and not _is_main_account_email(acc.get("email")):
-            continue
+    if not fast:
+        for acc in accounts:
+            if not _is_main_account_email(acc.get("email")) and is_account_disabled(acc):
+                continue
+            if acc["status"] not in (STATUS_ACTIVE, STATUS_PERSONAL) and not _is_main_account_email(acc.get("email")):
+                continue
 
-        auth_file = _resolve_status_auth_file(acc)
-        if not auth_file:
-            continue
+            auth_file = _resolve_status_auth_file(acc)
+            if not auth_file:
+                continue
 
-        try:
-            auth_data = json.loads(read_text(Path(auth_file)))
-            access_token = auth_data.get("access_token")
-            if access_token:
-                status, info = check_codex_quota(access_token)
-                if status == "ok" and isinstance(info, dict):
-                    quota_cache[acc["email"]] = info
-                elif status == "exhausted":
-                    quota_info = quota_result_quota_info(info)
-                    if quota_info:
-                        quota_cache[acc["email"]] = quota_info
-        except Exception:
-            pass
+            try:
+                auth_data = json.loads(read_text(Path(auth_file)))
+                access_token = auth_data.get("access_token")
+                if access_token:
+                    status, info = check_codex_quota(access_token)
+                    if status == "ok" and isinstance(info, dict):
+                        quota_cache[acc["email"]] = info
+                    elif status == "exhausted":
+                        quota_info = quota_result_quota_info(info)
+                        if quota_info:
+                            quota_cache[acc["email"]] = quota_info
+            except Exception:
+                pass
 
     sanitized_accounts = [_sanitize_account(a, quota_cache.get(a.get("email"))) for a in accounts]
 
@@ -2958,8 +3005,13 @@ def get_status():
         "quota_cache": quota_cache,
         "runtime_resources": _safe_runtime_resource_snapshot(),
         "ipv6_pool": _safe_ipv6_pool_status(),
-        "cliproxy": _safe_cliproxy_health(),
+        "cliproxy": _safe_cliproxy_health(timeout=0.5, cache_ttl=30.0) if fast else _safe_cliproxy_health(),
         "multi_master": _safe_multi_master_status(),
+        "status_mode": {
+            "fast": fast,
+            "quota_budget_seconds": 0 if fast else None,
+            "live_quota": not fast,
+        },
         "rotation_validation": {
             **_rotation_validation_cooldown,
             "cooldown_remaining_seconds": int(_rotation_validation_cooldown_remaining()),
@@ -3892,6 +3944,10 @@ def _auto_check_loop():
             break
         if _auto_check_restart.is_set():
             continue  # 配置变更，跳到下一轮重新读取配置
+
+        if _playwright_lock.locked() or _current_task_id:
+            logger.info("[巡检] 有任务正在执行，跳过本轮自动巡检昂贵探测")
+            continue
 
         try:
             cfg = _auto_check_config  # 重新读取

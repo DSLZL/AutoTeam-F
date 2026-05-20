@@ -24,6 +24,9 @@
 
 - `collect_runtime_resource_snapshot() -> dict[str, Any]`
 - `log_runtime_resource_snapshot(logger: Any, *, label: str = "runtime") -> dict[str, Any]`
+- `GET /api/status?fast=true`
+- `bump_task_progress(stage: str = "") -> None`
+- `_record_task_progress(task: dict, stage: str, now: float | None = None) -> None`
 - `close_playwright_objects(page=None, context=None, browser=None, playwright=None, *, logger=None, label="playwright") -> None`
 - `python -m autoteam.playwright_probe team-member-count`
 - `ChatGPTTeamAPI.start_with_session(session_token, account_id, workspace_name="", require_browser=False)`
@@ -78,6 +81,7 @@
   - `IPV6_PROXY_*` keys for local listen, public auth URL, allowed IPs, port range, TTL, and pool persistence
 - `CHATGPT_API_TRANSPORT=curl_cffi` or `auto` is allowed only for backend API reads. It must not be used for free registration, Personal OAuth, captcha/challenge flows, or workspace UI selection; those call sites must force `require_browser=True` or launch their own Playwright context.
 - `/api/status` may include `runtime_resources`, but resource collection must never block or fail the status response.
+- `/api/status?fast=true` is the polling-safe status path. It must skip live Codex quota checks, keep the ordinary account/status summary shape, use a bounded CLIProxy health read, and return `status_mode.fast=true` with `live_quota=false`.
 - Background Team member count probes must run in a killable subprocess and return unknown (`-1`) on timeout/failure.
 - `ChatGPTTeamAPI.start_with_session()` must call `stop()` if the browser fallback path fails after partial initialization, not only when `_launch_browser()` itself fails.
 - `ChatGPTTeamAPI.start_with_session()` must also call `stop()` when HTTP transport startup succeeds but later workspace detection or admin-state persistence fails.
@@ -112,6 +116,8 @@
 - `POST /api/main-codex/start` is the remote-sync path: it must require at least one fully configured enabled sync target before starting browser work or syncing an existing local main auth file.
 - `POST /api/main-codex/delete-remote-files` and legacy `POST /api/main-codex/delete-cpa` are explicit remote deletion actions. They must use `delete_main_codex_from_configured_targets()` through the configured target router and summarize the deleted CPA/Sub2API filenames.
 - API-driven `rotate`, `auto-fill`, and `auto-rotate` must not block task completion on CPA/CLIProxyAPI remote sync. Use `background_post_sync=True` so `cmd_rotate()` schedules final sync after the Playwright-bound operation releases task state.
+- Long-running background tasks must maintain `last_progress_at`, `progress`, and bounded `progress_history` stage timings. Preserve the existing cancellation ordering: reset the cancellation signal before exposing `_current_task_id`, then allow `bump_task_progress()` to update the active task.
+- Auto-check must not run expensive probes while a Playwright-bound task is active. If `_playwright_lock` is locked or `_current_task_id` is set after the interval wait, skip that round before loading accounts, reading CLIProxy health, or launching Team-member probes.
 - IPv6 proxy isolation is opt-in. Disabled-by-default installs must not create local proxy processes, mutate network state, or require IPv6 kernel configuration.
 - When `AUTOTEAM_IPV6_POOL_REQUIRED=true`, allocation/preflight failure is a hard business/runtime error. Do not silently fall back to direct network access.
 - Account-scoped browser and HTTP transport paths must propagate the allocated local proxy URL into Playwright launch options and `curl_cffi` transport construction. Persisted auth bundles should store the public/auth proxy URL only when one was allocated.
@@ -154,6 +160,9 @@
 | `login_state_lost` has no usable local auth file and blocks Team capacity | Pause repair, release the Team seat when present, and retire/disable the released local row under skip-reuse mode |
 | `login_state_lost` has a protected local credential auth file | Pause repair without releasing the Team seat or disabling the row |
 | `collect_runtime_resource_snapshot()` unexpectedly raises inside `/api/status` | Return a status response with a diagnostic `runtime_resources.error`; do not raise a 500 |
+| `/api/status?fast=true` is called while rotate/fill is running | Return account/resource snapshot without live quota probes and with bounded CLIProxy health metadata |
+| background task calls `bump_task_progress("stage")` repeatedly | Update task heartbeat and append/refresh a bounded stage history |
+| auto-check wakes while `_playwright_lock` or `_current_task_id` indicates an active task | Log a skip message and do not load accounts, query CPA gate, or launch Team-member probes |
 | CLIProxyAPI health config is missing or unreachable | Return `cliproxy.ok=false`, `safe_read_only=true`, and a reason; do not raise a 500 |
 | CLIProxyAPI auth-file payload is malformed | Return provider/management diagnostic fields; do not treat it as an empty healthy provider set |
 | CPA sync target is disabled | `_collect_cpa_credential_gate()` returns `enabled=false`; auto-check behavior is unchanged |
@@ -180,6 +189,8 @@
 - Bad: treating required-mode IPv6 failures as warnings; this hides pool exhaustion and defeats isolation.
 - Bad: using `/api/sync`, `upload_to_cpa()`, or `delete_from_cpa()` as part of the CPA credential gate. The gate is diagnostic/read-only and must not mutate remote credentials.
 - Bad: treating a failed CLIProxyAPI management request as `available=0`; this would trigger unnecessary rotation on unreliable evidence.
+- Bad: using full `/api/status` as a high-frequency frontend polling endpoint during rotation; it can spend real quota-probe time and interfere with Playwright-bound work.
+- Bad: running auto-check's Team-member/CPA/account probes while another task already holds the Playwright lock.
 
 ### 6. Tests Required
 
@@ -202,8 +213,11 @@
   - selected target `test_manager_auth_repair.py` assertions may be used for `_login_codex_with_result()` result-wrapper parity, `cmd_check(...force_auth_repair...)`, historical-low-quota network-error handling, and protected/released Team blocker behavior. Full-file target parity is not required while remaining failures describe target-only `"auth_pending"` persisted literals, exact `update_account()` call shape, or the rejected add-phone retry-disabled no-release policy.
   - current `tests/unit/test_round12_s3_cherry_pick.py::TestCmdCheckAuthRepairEntry` and `::TestRecordAuthRepairFailure` must cover the adapted current behavior.
 - Status endpoint integration: `tests/unit/test_api_status.py`
+  - fast status skips live quota probes and uses bounded CLIProxy health reads.
+  - active tasks record progress history from `bump_task_progress()`.
 - CLIProxyAPI read-only health: `tests/unit/test_cliproxy_health.py`
 - CPA credential gate for auto-check: `tests/unit/test_api_status.py`
+  - Auto-check skips expensive probes while a task is active.
   - Full Team + local active shortage + `management_ok=true` + `available=0` triggers `auto-fill` without sync/upload/delete.
   - Management failure with `available=0` does not trigger replacement.
 - Rotate deferred post-sync and validation plumbing: `tests/unit/test_manager_rotate.py` and `tests/unit/test_api_status.py`
